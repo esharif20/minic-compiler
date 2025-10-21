@@ -1,0 +1,36 @@
+name: MiniC Compiler Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Install LLVM and Clang
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y llvm-14 llvm-14-dev clang-14
+        sudo ln -sf /usr/bin/clang++-14 /usr/bin/clang++
+        sudo ln -sf /usr/bin/llvm-config-14 /usr/bin/llvm-config
+    
+    - name: Build compiler
+      working-directory: ./code
+      run: make
+    
+    - name: Run tests (compile only)
+      working-directory: ./code
+      run: ./tests/tests.sh -compile_only
+    
+    - name: Display test results
+      if: always()
+      run: |
+        echo "Tests completed!"
+        ls -la code/
