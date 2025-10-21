@@ -27,24 +27,17 @@ jobs:
       run: |
         sudo tee /usr/local/bin/module > /dev/null << 'SCRIPT'
         #!/bin/bash
-        # Dummy module command for CI - does nothing
-        echo "module command (CI): ignoring '$@'"
+        echo "module: ignoring '$@' (CI environment)"
         SCRIPT
         sudo chmod +x /usr/local/bin/module
     
-    - name: Build compiler
-      working-directory: ./code
-      run: make
-    
     - name: Run tests (compile only)
-      working-directory: ./code/tests
+      working-directory: ./code
       run: |
-        # Override DCS paths with CI paths
         export LLVM_INSTALL_PATH=/usr
         export PATH=/usr/bin:$PATH
         export LD_LIBRARY_PATH=/usr/lib:$LD_LIBRARY_PATH
-        
-        ./tests.sh -compile_only
+        ./tests/tests.sh -compile_only
     
     - name: Show results
       if: always()
