@@ -572,6 +572,60 @@ public:
   std::string to_string() const override { return "UnaryExpr"; }
 };
 
+
+/// BinaryExprAST - Expression class for binary operators
+class BinaryExprAST : public ASTnode {
+  char Op;                              // Operator: +, -, *, /, %, <, >, etc.
+  std::unique_ptr<ASTnode> LHS, RHS;    // Left and Right operands
+
+public:
+  BinaryExprAST(char op, std::unique_ptr<ASTnode> lhs, 
+                std::unique_ptr<ASTnode> rhs)
+      : Op(op), LHS(std::move(lhs)), RHS(std::move(rhs)) {}
+  
+  char getOp() const { return Op; }
+  ASTnode* getLHS() const { return LHS.get(); }
+  ASTnode* getRHS() const { return RHS.get(); }
+  
+  Value *codegen() override { return nullptr; }
+  std::string to_string() const override { return "BinaryExpr"; }
+};
+
+/// AssignAST - Expression class for assignment: IDENT = expr
+class AssignAST : public ASTnode {
+  std::unique_ptr<VariableASTnode> LHS;  // Variable being assigned to
+  std::unique_ptr<ASTnode> RHS;          // Expression value
+
+public:
+  AssignAST(std::unique_ptr<VariableASTnode> lhs, 
+            std::unique_ptr<ASTnode> rhs)
+      : LHS(std::move(lhs)), RHS(std::move(rhs)) {}
+  
+  VariableASTnode* getLHS() const { return LHS.get(); }
+  ASTnode* getRHS() const { return RHS.get(); }
+  
+  Value *codegen() override { return nullptr; }
+  std::string to_string() const override { return "Assignment"; }
+};
+
+
+/// CallExprAST - Expression class for function calls
+class CallExprAST : public ASTnode {
+  std::string Callee;                         // Function name
+  std::vector<std::unique_ptr<ASTnode>> Args; // Arguments
+
+public:
+  CallExprAST(const std::string &callee, 
+              std::vector<std::unique_ptr<ASTnode>> args)
+      : Callee(callee), Args(std::move(args)) {}
+  
+  const std::string &getCallee() const { return Callee; }
+  const std::vector<std::unique_ptr<ASTnode>>& getArgs() const { return Args; }
+  
+  Value *codegen() override { return nullptr; }
+  std::string to_string() const override { return "FunctionCall"; }
+};
+
 /// BlockAST - Class for a block with declarations followed by statements
 class BlockAST : public ASTnode {
   std::vector<std::unique_ptr<VarDeclAST>> LocalDecls; // vector of local decls
