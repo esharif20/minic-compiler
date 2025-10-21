@@ -1,0 +1,17 @@
+cat > .gitignore << 'EOF'
+# Compiled files
+code/mccomp
+code/*.o
+code/*.ll
+code/output.ll
+
+# Editor files
+*.swp
+*~
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+EOF
