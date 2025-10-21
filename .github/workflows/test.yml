@@ -23,23 +23,29 @@ jobs:
         sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-16 100
         sudo update-alternatives --install /usr/bin/llvm-config llvm-config /usr/bin/llvm-config-16 100
     
-    - name: Verify LLVM installation
+    - name: Create dummy module command
       run: |
-        echo "LLVM version:"
-        llvm-config --version
-        echo "Clang version:"
-        clang++ --version
+        sudo tee /usr/local/bin/module > /dev/null << 'SCRIPT'
+        #!/bin/bash
+        # Dummy module command for CI - does nothing
+        echo "module command (CI): ignoring '$@'"
+        SCRIPT
+        sudo chmod +x /usr/local/bin/module
     
     - name: Build compiler
       working-directory: ./code
       run: make
     
     - name: Run tests (compile only)
-      working-directory: ./code
-      run: ./tests/tests.sh -compile_only
-    
-    - name: Display test results
-      if: always()
+      working-directory: ./code/tests
       run: |
-        echo "Tests completed!"
-        ls -la code/
+        # Override DCS paths with CI paths
+        export LLVM_INSTALL_PATH=/usr
+        export PATH=/usr/bin:$PATH
+        export LD_LIBRARY_PATH=/usr/lib:$LD_LIBRARY_PATH
+        
+        ./tests.sh -compile_only
+    
+    - name: Show results
+      if: always()
+      run: echo "Tests completed!"
