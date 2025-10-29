@@ -1,282 +1,273 @@
-CS325 COURSEWORK - TASK 1.2.1: GRAMMAR TRANSFORMATIONS
-========================================================
+# CS325 — TASK 1.2.1
+# FINAL LL(k) GRAMMAR + FIRST & FOLLOW SETS (ε = epsilon)
+# Uses the SAME nonterminal names as Figure 1 (incl. `rval`), with layered sub-NONTERMINALS for precedence.
 
-PART 1: REWRITTEN LL GRAMMAR
-=============================
+======================================================
+PART A — GRAMMAR (left recursion removed; LL(k); precedence enforced)
+======================================================
 
-Productions with left recursion removed and precedence enforced:
+program ::= extern_list decl_list
+          | decl_list
 
-EXPRESSIONS (lowest to highest precedence):    ← FIX #1: Changed heading
+extern_list ::= extern extern_list'
+extern_list' ::= extern extern_list'
+               | ε
 
-expr → IDENT '=' expr | or_expr
+extern ::= "extern" type_spec IDENT "(" params ")" ";"
 
-or_expr → and_expr or_tail
-or_tail → '||' and_expr or_tail | ε
+decl_list ::= decl decl_list'
+decl_list' ::= decl decl_list'
+             | ε
 
-and_expr → eq_expr and_tail
-and_tail → '&&' eq_expr and_tail | ε
+decl ::= var_decl
+       | fun_decl
 
-eq_expr → rel_expr eq_tail
-eq_tail → ('==' | '!=') rel_expr eq_tail | ε
+var_decl ::= var_type IDENT ";"
 
-rel_expr → add_expr rel_tail
-rel_tail → ('<' | '<=' | '>' | '>=') add_expr rel_tail | ε
+type_spec ::= "void"
+            | var_type
 
-add_expr → mul_expr add_tail
-add_tail → ('+' | '-') mul_expr add_tail | ε
+var_type ::= "int" | "float" | "bool"
 
-mul_expr → unary mul_tail
-mul_tail → ('*' | '/' | '%') unary mul_tail | ε
+fun_decl ::= type_spec IDENT "(" params ")" block
 
-unary → '-' unary | '!' unary | primary
+params ::= param_list
+         | "void"
+         | ε
 
-primary → '(' expr ')' | IDENT primary_tail | INT_LIT | FLOAT_LIT | BOOL_LIT
-primary_tail → '(' args ')' | ε
+param_list ::= param param_list'
+param_list' ::= "," param param_list'
+              | ε
 
-ARGUMENT LISTS:
+param ::= var_type IDENT
 
-args → arg_list | ε
-arg_list → expr arg_tail
-arg_tail → ',' expr arg_tail | ε
+block ::= "{" local_decls stmt_list "}"
 
-TOP-LEVEL LISTS (already transformed in provided code):
+local_decls ::= local_decl local_decls'
+              | ε
+local_decls' ::= local_decl local_decls'
+               | ε
 
-extern_list → extern extern_list'
-extern_list' → extern extern_list' | ε
+local_decl ::= var_type IDENT ";"
 
-decl_list → decl decl_list'
-decl_list' → decl decl_list' | ε
+stmt_list ::= stmt stmt_list'
+            | ε
+stmt_list' ::= stmt stmt_list'
+             | ε
 
-param_list → param param_list'
-param_list' → ',' param param_list' | ε
+stmt ::= expr_stmt
+       | block
+       | if_stmt
+       | while_stmt
+       | return_stmt
 
-stmt_list → stmt stmt_list'
-stmt_list' → stmt stmt_list' | ε
+expr_stmt ::= expr ";"
+            | ";"
 
-local_decls → local_decl local_decls'
-local_decls' → local_decl local_decls' | ε
+while_stmt ::= "while" "(" expr ")" stmt
 
-NOTES:                                           ← FIX #2, #3, #7: Improved clarity
-- Left recursion eliminated using A → βA' pattern
-- Operator precedence (lowest to highest): || < && < == != < < <= > >= < + - < * / % < unary
-- Assignment: After seeing IDENT, peek one token. If '=' then parse IDENT '=' expr (right-associative), 
-  otherwise parse or_expr
-- Binary operators are left-associative (via tail recursion)
-- Unary operators are right-associative (via direct recursion)
-- Special case: "void" in params stands alone to mean no parameters; "void, x" is invalid  ← FIX #5
+if_stmt ::= "if" "(" expr ")" block else_stmt
 
+else_stmt ::= "else" block
+            | ε
 
-========================================================
+return_stmt ::= "return" ";"
+              | "return" expr ";"
 
-PART 2: FIRST SETS
-===================
+# ---- Expressions (lowest → highest precedence) ----
+expr ::= IDENT "=" expr
+       | rval
 
-FIRST(primary) = { '(', IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT }
-FIRST(primary_tail) = { '(', ε }
+rval ::= or_expr
 
-FIRST(unary) = { '-', '!', '(', IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT }
+or_expr    ::= and_expr or_tail
+or_tail    ::= "||" and_expr or_tail
+             | ε
 
-FIRST(mul_expr) = { '-', '!', '(', IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT }
-FIRST(mul_tail) = { '*', '/', '%', ε }
+and_expr   ::= eq_expr and_tail
+and_tail   ::= "&&" eq_expr and_tail
+             | ε
 
-FIRST(add_expr) = { '-', '!', '(', IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT }
-FIRST(add_tail) = { '+', '-', ε }
+eq_expr    ::= rel_expr eq_tail
+eq_tail    ::= "==" rel_expr eq_tail
+             | "!=" rel_expr eq_tail
+             | ε
 
-FIRST(rel_expr) = { '-', '!', '(', IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT }
-FIRST(rel_tail) = { '<', '<=', '>', '>=', ε }
+rel_expr   ::= add_expr rel_tail
+rel_tail   ::= "<=" add_expr rel_tail
+             | "<"  add_expr rel_tail
+             | ">=" add_expr rel_tail
+             | ">"  add_expr rel_tail
+             | ε
 
-FIRST(eq_expr) = { '-', '!', '(', IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT }
-FIRST(eq_tail) = { '==', '!=', ε }
+add_expr   ::= mul_expr add_tail
+add_tail   ::= "+" mul_expr add_tail
+             | "-" mul_expr add_tail
+             | ε
 
-FIRST(and_expr) = { '-', '!', '(', IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT }
-FIRST(and_tail) = { '&&', ε }
+mul_expr   ::= unary mul_tail
+mul_tail   ::= "*" unary mul_tail
+             | "/" unary mul_tail
+             | "%" unary mul_tail
+             | ε
 
-FIRST(or_expr) = { '-', '!', '(', IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT }
-FIRST(or_tail) = { '||', ε }
+unary      ::= "-" unary
+             | "!" unary
+             | primary
 
-FIRST(expr) = { IDENT, '-', '!', '(', INT_LIT, FLOAT_LIT, BOOL_LIT }
+primary    ::= "(" expr ")"
+             | IDENT primary_tail
+             | INT_LIT
+             | FLOAT_LIT
+             | BOOL_LIT
 
-FIRST(args) = { IDENT, '-', '!', '(', INT_LIT, FLOAT_LIT, BOOL_LIT, ε }
-FIRST(arg_list) = { IDENT, '-', '!', '(', INT_LIT, FLOAT_LIT, BOOL_LIT }
-FIRST(arg_tail) = { ',', ε }
+primary_tail ::= "(" args ")"
+               | ε
 
-FIRST(param) = { 'int', 'float', 'bool' }
-FIRST(param_list) = { 'int', 'float', 'bool' }
-FIRST(params) = { 'int', 'float', 'bool', 'void', ε }
+args ::= arg_list
+       | ε
 
-FIRST(block) = { '{' }
-FIRST(local_decl) = { 'int', 'float', 'bool' }
-FIRST(local_decls) = { 'int', 'float', 'bool', ε }
+arg_list ::= expr arg_tail
+arg_tail ::= "," expr arg_tail
+           | ε
 
-FIRST(expr_stmt) = { IDENT, '-', '!', '(', INT_LIT, FLOAT_LIT, BOOL_LIT, ';' }
-FIRST(stmt) = { IDENT, '-', '!', '(', INT_LIT, FLOAT_LIT, BOOL_LIT, ';', '{', 'if', 'while', 'return' }
-FIRST(stmt_list) = { IDENT, '-', '!', '(', INT_LIT, FLOAT_LIT, BOOL_LIT, ';', '{', 'if', 'while', 'return', ε }
 
-FIRST(decl) = { 'void', 'int', 'float', 'bool' }
-FIRST(decl_list) = { 'void', 'int', 'float', 'bool' }
+======================================================
+PART B — FIRST SETS (for ALL nonterminals)
+======================================================
 
-FIRST(extern) = { 'extern' }
-FIRST(extern_list) = { 'extern' }
+FIRST(program)        = { "extern", "void", "int", "float", "bool" }
 
-FIRST(program) = { 'extern', 'void', 'int', 'float', 'bool' }
+FIRST(extern_list)    = { "extern" }
+FIRST(extern_list')   = { "extern", ε }
+FIRST(extern)         = { "extern" }
+
+FIRST(decl_list)      = { "void", "int", "float", "bool" }
+FIRST(decl_list')     = { "void", "int", "float", "bool", ε }
+FIRST(decl)           = { "void", "int", "float", "bool" }
+
+FIRST(var_decl)       = { "int", "float", "bool" }
+FIRST(type_spec)      = { "void", "int", "float", "bool" }
+FIRST(var_type)       = { "int", "float", "bool" }
+
+FIRST(fun_decl)       = { "void", "int", "float", "bool" }
+
+FIRST(params)         = { "int", "float", "bool", "void", ε }
+FIRST(param_list)     = { "int", "float", "bool" }
+FIRST(param_list')    = { ",", ε }
+FIRST(param)          = { "int", "float", "bool" }
+
+FIRST(block)          = { "{" }
+FIRST(local_decls)    = { "int", "float", "bool", ε }
+FIRST(local_decls')   = { "int", "float", "bool", ε }
+FIRST(local_decl)     = { "int", "float", "bool" }
+
+FIRST(stmt_list)      = { "{", "if", "while", "return", IDENT, "-", "!", "(", INT_LIT, FLOAT_LIT, BOOL_LIT, ";", ε }
+FIRST(stmt_list')     = { "{", "if", "while", "return", IDENT, "-", "!", "(", INT_LIT, FLOAT_LIT, BOOL_LIT, ";", ε }
+FIRST(stmt)           = { "{", "if", "while", "return", IDENT, "-", "!", "(", INT_LIT, FLOAT_LIT, BOOL_LIT, ";" }
+FIRST(expr_stmt)      = { IDENT, "-", "!", "(", INT_LIT, FLOAT_LIT, BOOL_LIT, ";" }
+FIRST(while_stmt)     = { "while" }
+FIRST(if_stmt)        = { "if" }
+FIRST(else_stmt)      = { "else", ε }
+FIRST(return_stmt)    = { "return" }
 
-
-========================================================
-
-PART 3: FOLLOW SETS
-====================
-
-Key FOLLOW sets for non-terminals with ε productions:     ← FIX #4: Removed unnecessary }
-
-FOLLOW(or_tail) = { ')', ';', ',' }
-  Derivation: or_tail appears at end of or_expr
-  or_expr appears in: expr, if/while conditions, arguments, return statements
-  These contexts end with ), ;, or ,
-
-FOLLOW(and_tail) = { '||', ')', ';', ',' }
-  Derivation: and_tail at end of and_expr
-  and_expr in or_tail, so includes FIRST(or_tail)\{ε} = {'||'} plus FOLLOW(or_expr)
-
-FOLLOW(eq_tail) = { '&&', '||', ')', ';', ',' }
-  Derivation: eq_tail at end of eq_expr
-  eq_expr in and_tail, so includes FIRST(and_tail)\{ε} = {'&&'} plus FOLLOW(and_expr)
-
-FOLLOW(rel_tail) = { '==', '!=', '&&', '||', ')', ';', ',' }
-  Derivation: rel_tail at end of rel_expr
-  rel_expr in eq_tail, so includes FIRST(eq_tail)\{ε} = {'==','!='} plus FOLLOW(eq_expr)
-
-FOLLOW(add_tail) = { '<', '<=', '>', '>=', '==', '!=', '&&', '||', ')', ';', ',' }
-  Derivation: add_tail at end of add_expr
-  add_expr in rel_tail, so includes FIRST(rel_tail)\{ε} plus FOLLOW(rel_expr)
-
-FOLLOW(mul_tail) = { '+', '-', '<', '<=', '>', '>=', '==', '!=', '&&', '||', ')', ';', ',' }
-  Derivation: mul_tail at end of mul_expr
-  mul_expr in add_tail, so includes FIRST(add_tail)\{ε} plus FOLLOW(add_expr)
-
-FOLLOW(primary_tail) = { '*', '/', '%', '+', '-', '<', '<=', '>', '>=', '==', '!=', '&&', '||', ')', ';', ',' }
-  Derivation: primary appears in unary, followed by operators or statement endings
-
-FOLLOW(args) = { ')' }
-  Derivation: args always appears between '(' and ')' in function calls
-
-FOLLOW(arg_tail) = { ')' }
-
-FOLLOW(param_list) = { ')' }
-  Derivation: param_list in function declarations, always followed by ')'
-
-FOLLOW(local_decls) = { IDENT, '-', '!', '(', INT_LIT, FLOAT_LIT, BOOL_LIT, ';', '{', 'if', 'while', 'return', '}' }
-  Derivation: FIRST(stmt_list) \ {ε} ∪ { '}' }
-
-FOLLOW(stmt_list) = { '}' }
-  Derivation: stmt_list always in blocks, ended by '}'
-
-FOLLOW(program) = { $ }
-  Derivation: program is start symbol
-
-
-========================================================
-
-PART 4: LL PREDICTABILITY CHECK
-================================
-
-Checking for LL(1) conflicts:
-
-For or_tail → '||' and_expr or_tail | ε:
-  FIRST('||' and_expr or_tail) = { '||' }
-  FIRST(ε) = { ε }
-  FOLLOW(or_tail) = { ')', ';', ',' }
-  { '||' } ∩ { ')', ';', ',' } = ∅  ✓ No conflict
-
-For and_tail → '&&' eq_expr and_tail | ε:
-  FIRST('&&' eq_expr and_tail) = { '&&' }
-  FIRST(ε) = { ε }
-  FOLLOW(and_tail) = { '||', ')', ';', ',' }
-  { '&&' } ∩ { '||', ')', ';', ',' } = ∅  ✓ No conflict
-
-For eq_tail → ('==' | '!=') rel_expr eq_tail | ε:
-  FIRST('==' rel_expr eq_tail) = { '==' }
-  FIRST('!=' rel_expr eq_tail) = { '!=' }
-  FIRST(ε) = { ε }
-  FOLLOW(eq_tail) = { '&&', '||', ')', ';', ',' }
-  All disjoint  ✓ No conflict
-
-For rel_tail → ('<' | '<=' | '>' | '>=') add_expr rel_tail | ε:
-  FIRST sets: { '<' }, { '<=' }, { '>' }, { '>=' }, { ε }
-  FOLLOW(rel_tail) = { '==', '!=', '&&', '||', ')', ';', ',' }
-  All disjoint  ✓ No conflict
-
-For add_tail → ('+' | '-') mul_expr add_tail | ε:
-  FIRST('+' mul_expr add_tail) = { '+' }
-  FIRST('-' mul_expr add_tail) = { '-' }
-  FIRST(ε) = { ε }
-  FOLLOW(add_tail) = { '<', '<=', '>', '>=', '==', '!=', '&&', '||', ')', ';', ',' }
-  All disjoint  ✓ No conflict
-
-For mul_tail → ('*' | '/' | '%') unary mul_tail | ε:
-  FIRST sets: { '*' }, { '/' }, { '%' }, { ε }
-  FOLLOW(mul_tail) = { '+', '-', '<', '<=', '>', '>=', '==', '!=', '&&', '||', ')', ';', ',' }
-  All disjoint  ✓ No conflict
-
-For primary_tail → '(' args ')' | ε:
-  FIRST('(' args ')') = { '(' }
-  FIRST(ε) = { ε }
-  FOLLOW(primary_tail) = { '*', '/', '%', '+', '-', '<', '<=', '>', '>=', '==', '!=', '&&', '||', ')', ';', ',' }
-  { '(' } ∩ FOLLOW = ∅  ✓ No conflict
-
-For arg_tail → ',' expr arg_tail | ε:
-  FIRST(',' expr arg_tail) = { ',' }
-  FIRST(ε) = { ε }
-  FOLLOW(arg_tail) = { ')' }
-  { ',' } ∩ { ')' } = ∅  ✓ No conflict
-
-SPECIAL CASE: expr → IDENT '=' expr | or_expr          ← FIX #3: Clarified
-  Both alternatives start with IDENT
-  Resolution: After seeing IDENT, peek at the next token
-  - If next token is '=', use assignment: IDENT '=' expr
-  - Otherwise, use or_expr production
-  This is LL(2) but resolved with 1-token lookahead AFTER consuming IDENT
-
-CONCLUSION: Grammar is LL(1) with one LL(2) case at assignment.
-All conflicts resolved. Parser can distinguish alternatives using 
-lookahead tokens.
-
-
-========================================================
-
-PART 5: PRECEDENCE AND ASSOCIATIVITY VERIFICATION
-==================================================
-
-Operator precedence levels (lowest to highest):        ← FIX #2: Clear levels
-  Level 1 (lowest):  || (logical OR)
-  Level 2:           && (logical AND)
-  Level 3:           == != (equality)
-  Level 4:           < <= > >= (relational)
-  Level 5:           + - (additive)
-  Level 6:           * / % (multiplicative)
-  Level 7 (highest): - ! (unary)
-
-This matches standard C precedence.
-
-Associativity:                                         ← FIX #7: Consolidated
-- Assignment (=): Right-associative via expr → IDENT '=' expr
-- Binary operators (||, &&, ==, !=, <, <=, >, >=, +, -, *, /, %): 
-  Left-associative via tail recursion pattern
-- Unary operators (-, !): Right-associative via unary → '-' unary | '!' unary
-
-All match standard C associativity rules.
-
-
-========================================================
-
-SUMMARY
-=======
-
-✓ Grammar transformed to LL form with left recursion eliminated
-✓ FIRST sets computed for all non-terminals (including ε in stmt_list)
-✓ FOLLOW sets computed for non-terminals with ε productions
-✓ LL predictability verified (LL(1) with one LL(2) case at assignment)
-✓ Precedence matches C (7 levels, lowest to highest: || && == != < <= > >= + - * / % unary)
-✓ Associativity matches C (assignment and unary right-associative, binary left-associative)
-✓ Grammar is suitable for recursive descent parsing
-
-========================================================
+FIRST(expr)           = { IDENT, "-", "!", "(", INT_LIT, FLOAT_LIT, BOOL_LIT }
+FIRST(rval)           = { IDENT, "-", "!", "(", INT_LIT, FLOAT_LIT, BOOL_LIT }
+
+FIRST(or_expr)        = { IDENT, "-", "!", "(", INT_LIT, FLOAT_LIT, BOOL_LIT }
+FIRST(or_tail)        = { "||", ε }
+
+FIRST(and_expr)       = { IDENT, "-", "!", "(", INT_LIT, FLOAT_LIT, BOOL_LIT }
+FIRST(and_tail)       = { "&&", ε }
+
+FIRST(eq_expr)        = { IDENT, "-", "!", "(", INT_LIT, FLOAT_LIT, BOOL_LIT }
+FIRST(eq_tail)        = { "==", "!=", ε }
+
+FIRST(rel_expr)       = { IDENT, "-", "!", "(", INT_LIT, FLOAT_LIT, BOOL_LIT }
+FIRST(rel_tail)       = { "<=", "<", ">=", ">", ε }
+
+FIRST(add_expr)       = { IDENT, "-", "!", "(", INT_LIT, FLOAT_LIT, BOOL_LIT }
+FIRST(add_tail)       = { "+", "-", ε }
+
+FIRST(mul_expr)       = { IDENT, "-", "!", "(", INT_LIT, FLOAT_LIT, BOOL_LIT }
+FIRST(mul_tail)       = { "*", "/", "%", ε }
+
+FIRST(unary)          = { "-", "!", "(", IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT }
+FIRST(primary)        = { "(", IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT }
+FIRST(primary_tail)   = { "(", ε }
+
+FIRST(args)           = { IDENT, "-", "!", "(", INT_LIT, FLOAT_LIT, BOOL_LIT, ε }
+FIRST(arg_list)       = { IDENT, "-", "!", "(", INT_LIT, FLOAT_LIT, BOOL_LIT }
+FIRST(arg_tail)       = { ",", ε }
+
+
+======================================================
+PART C — FOLLOW SETS (headline & ε-nonterminals)
+======================================================
+
+FOLLOW(program)       = { $ }
+
+# Lists / tails around top-level structure
+FOLLOW(extern_list)   = { "void", "int", "float", "bool" }
+FOLLOW(extern_list')  = { "void", "int", "float", "bool" }
+FOLLOW(decl_list)     = { $ }
+FOLLOW(decl_list')    = { $ }
+
+# Params / args
+FOLLOW(params)        = { ")" }
+FOLLOW(param_list)    = { ")" }
+FOLLOW(param_list')   = { ")" }
+
+FOLLOW(args)          = { ")" }
+FOLLOW(arg_list)      = { ")" }
+FOLLOW(arg_tail)      = { ")" }
+
+# Blocks & statements
+FOLLOW(block)         = { "{", "if", "while", "return", IDENT, "-", "!", "(", INT_LIT, FLOAT_LIT, BOOL_LIT, ";", "}", $ }
+FOLLOW(local_decls)   = { "{", "if", "while", "return", IDENT, "-", "!", "(", INT_LIT, FLOAT_LIT, BOOL_LIT, ";", "}" }
+FOLLOW(local_decls')  = FOLLOW(local_decls)
+FOLLOW(stmt_list)     = { "}" }
+FOLLOW(stmt_list')    = { "}" }
+
+# Expression contexts (used in conditions, returns, expr_stmt, args)
+FOLLOW(expr)          = { ")", ";", ",", "}" }   # covers all typical followers
+FOLLOW(rval)          = FOLLOW(expr)
+
+# For completeness include the main expression nonterminals:
+FOLLOW(or_expr)       = FOLLOW(expr)
+FOLLOW(and_expr)      = { "||" } ∪ FOLLOW(or_expr)
+FOLLOW(eq_expr)       = { "&&" } ∪ FOLLOW(and_expr)
+FOLLOW(rel_expr)      = { "==", "!=" } ∪ FOLLOW(eq_expr)
+FOLLOW(add_expr)      = { "<", "<=", ">", ">=" } ∪ FOLLOW(rel_expr)
+FOLLOW(mul_expr)      = { "+", "-" } ∪ FOLLOW(add_expr)
+FOLLOW(unary)         = { "*", "/", "%" } ∪ FOLLOW(mul_expr)
+FOLLOW(primary)       = FOLLOW(unary)
+
+# ε-tails used for LL(1) decisions:
+FOLLOW(or_tail)       = FOLLOW(or_expr)          # = { ")", ";", ",", "}" }
+FOLLOW(and_tail)      = { "||" } ∪ FOLLOW(or_expr)
+FOLLOW(eq_tail)       = { "&&", "||" } ∪ FOLLOW(or_expr)
+FOLLOW(rel_tail)      = { "==", "!=", "&&", "||" } ∪ FOLLOW(or_expr)
+FOLLOW(add_tail)      = { "<", "<=", ">", ">=", "==", "!=", "&&", "||" } ∪ FOLLOW(or_expr)
+FOLLOW(mul_tail)      = { "+", "-", "<", "<=", ">", ">=", "==", "!=", "&&", "||" } ∪ FOLLOW(or_expr)
+
+# Call postfix after IDENT:
+FOLLOW(primary_tail)  = { "*", "/", "%", "+", "-", "<", "<=", ">", ">=", "==", "!=", "&&", "||", ")", ";", ",", "}" }
+
+
+======================================================
+PART D — QUICK LL(1) CHECK (why this is predictive)
+======================================================
+
+• Every X_tail has two options: a distinct operator FIRST vs ε. 
+  Decision rule: if lookahead ∈ FIRST(op), take op-alt; else (lookahead ∈ FOLLOW(X_tail)) take ε.
+  Since FIRST(op) tokens do not appear in the corresponding FOLLOW sets, choices are disjoint.
+
+• The only local LL(2) site is:  expr ::= IDENT "=" expr | rval
+  After seeing IDENT, peek one token:
+    "=" → choose assignment; otherwise → treat IDENT as start of rval/or_expr.
+  (This matches the coursework allowance for LL(k) with fixed k.)
+
+• Precedence & associativity are enforced structurally via the levelled nonterminals and left-folding tails.
+
+# END
