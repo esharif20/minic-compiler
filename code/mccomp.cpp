@@ -442,21 +442,72 @@ static const char* opTokName(int t) {
   }
 }
 
+// ---- pretty-print helpers for Task 1.3 (string-based AST printing) ----
+static inline std::string indentStr(int n) {
+  return std::string(n * 2, ' ');
+}
+
+static inline void appendln(std::string& out, int indent, const std::string& line) {
+  out += indentStr(indent);
+  out += line;
+  out += "\n";
+}
+
+// Prefix each line in 's' with (indent * 2) spaces.
+// Used to “nest” child to_string() blocks nicely.
+static inline std::string indentLines(const std::string& s, int indent) {
+  std::string out;
+  out.reserve(s.size() + 64);
+  size_t start = 0;
+  while (start < s.size()) {
+    size_t nl = s.find('\n', start);
+    if (nl == std::string::npos) nl = s.size();
+    out += indentStr(indent);
+    out.append(s, start, nl - start);
+    out += "\n";
+    start = (nl == s.size()) ? nl : nl + 1;
+  }
+  return out;
+}
+
 
 /// ASTnode - Base class for all AST nodes.
 class ASTnode {
 public:
   virtual ~ASTnode() {}
   virtual Value *codegen() { return nullptr; }
-  virtual std::string to_string() const { return ""; }
 
-  // NEW:
+  // Public forwarder so derived nodes can invoke a child's inner printer
+  void to_string_into(std::string& out, int indent) const {
+    to_string_inner(out, indent);
+  }
+
+  // Public facade used by llvm::outs() << ast and by your own code.
+  // It collects the full multi-line string starting at indent 0.
+  virtual std::string to_string() const {
+    std::string out;
+    to_string_inner(out, /*indent=*/0);
+    return out;
+  }
+
+  // Existing dump stays and now uses to_string() so both paths match.
   virtual void dump(int indent = 0) const {
-    // fallback (optional)
-    for (int i = 0; i < indent; ++i) fprintf(stderr, "  ");
-    fprintf(stderr, "%s\n", to_string().c_str());
+    // We want dump() to respect the requested indent. We take the fully
+    // generated string (which starts at indent 0) and re-indent it in one go.
+    const std::string s = to_string();
+    const std::string shifted = indentLines(s, indent);
+    // print
+    fwrite(shifted.data(), 1, shifted.size(), stderr);
+  }
+
+protected:
+  // New hook: subclasses will override THIS to build the indented string.
+  // Use appendln(out, indent, "Line...") and indentLines(childStr, indent+N).
+  virtual void to_string_inner(std::string& out, int indent) const {
+    appendln(out, indent, "<ASTnode>");
   }
 };
+
 
 
 /// IntASTnode - Class for integer literals like 1, 2, 10,
@@ -469,6 +520,7 @@ public:
   IntASTnode(TOKEN tok, int val) : Val(val), Tok(tok) {}
   const std::string &getType() const { return Tok.lexeme; }
   void dump(int indent = 0) const override;
+  void to_string_inner(std::string& out, int indent) const override;
 };
 
 /// BoolASTnode - Class for boolean literals true and false,
@@ -480,6 +532,7 @@ public:
   BoolASTnode(TOKEN tok, bool B) : Bool(B), Tok(tok) {}
   const std::string &getType() const { return Tok.lexeme; }
   void dump(int indent = 0) const override;
+  void to_string_inner(std::string& out, int indent) const override;
 };
 
 /// FloatASTnode - Node class for floating point literals like "1.0".
@@ -491,6 +544,7 @@ public:
   FloatASTnode(TOKEN tok, double Val) : Val(Val), Tok(tok) {}
   const std::string &getType() const { return Tok.lexeme; }
   void dump(int indent = 0) const override;
+  void to_string_inner(std::string& out, int indent) const override;
 };
 
 /// VariableASTnode - Class for referencing a variable (i.e. identifier), like
@@ -509,6 +563,7 @@ public:
   const std::string &getType() const { return Tok.lexeme; }
   const IDENT_TYPE getVarType() const { return VarType; }
   void dump(int indent = 0) const override;
+  void to_string_inner(std::string& out, int indent) const override;
 };
 
 /// ParamAST - Class for a parameter declaration
@@ -569,6 +624,8 @@ public:
   const std::string &getType() const { return Type; }
   int getSize() const { return Params.size(); }
   std::vector<std::unique_ptr<ParamAST>> &getParams() { return Params; }
+  const std::vector<std::unique_ptr<ParamAST>>& getParams() const { return Params; }
+
 };
 
 class ExprAST : public ASTnode {
@@ -600,8 +657,8 @@ public:
   
   // Virtual Methods
   Value *codegen() override { return nullptr; }
-  std::string to_string() const override { return "UnaryExpr"; }
   void dump(int indent = 0) const override;
+  void to_string_inner(std::string& out, int indent) const override;
 };
 
 /// BinaryExprAST - Expression class for binary operators
@@ -619,8 +676,8 @@ public:
   ASTnode* getRHS() const { return RHS.get(); }
 
   Value *codegen() override { return nullptr; }
-  std::string to_string() const override { return "BinaryExpr"; }
   void dump(int indent = 0) const override;
+  void to_string_inner(std::string& out, int indent) const override;
 };
 
 /// AssignAST - Expression class for assignment: IDENT = expr
@@ -637,8 +694,8 @@ public:
   ASTnode* getRHS() const { return RHS.get(); }
   
   Value *codegen() override { return nullptr; }
-  std::string to_string() const override { return "Assignment"; }
   void dump(int indent = 0) const override;
+  void to_string_inner(std::string& out, int indent) const override;
 };
 
 
@@ -656,8 +713,8 @@ public:
   const std::vector<std::unique_ptr<ASTnode>>& getArgs() const { return Args; }
   
   Value *codegen() override { return nullptr; }
-  std::string to_string() const override { return "FunctionCall"; }
   void dump(int indent = 0) const override;
+  void to_string_inner(std::string& out, int indent) const override;
 };
 
 /// BlockAST - Class for a block with declarations followed by statements
@@ -687,6 +744,7 @@ public:
       if (s) s->dump(indent + 2);
     }
   }
+  void to_string_inner(std::string& out, int indent) const override;
 };
 
 
@@ -724,7 +782,28 @@ public:
       Block->dump(indent + 2);
     }
   }
+  void to_string_inner(std::string& out, int indent) const override;
 };
+
+void FunctionDeclAST::to_string_inner(std::string& out, int indent) const {
+  const auto* P = Proto.get();
+  appendln(out, indent, std::string("Function ") +
+                       (P ? P->getName() : "<anon>") + " : " +
+                       (P ? P->getType() : "<unknown>"));
+  if (P) {
+    appendln(out, indent + 1, "Params (" + std::to_string(P->getSize()) + "):");
+    int i = 0;
+    for (const auto& param : P->getParams()) {  // uses the const getter
+      appendln(out, indent + 2,
+               std::to_string(i++) + ": " + param->getName() + " : " + param->getType());
+    }
+  }
+  if (Block) {
+    appendln(out, indent + 1, "Body:");
+    Block->to_string_into(out, indent + 2);
+  }
+}
+
 
 
 
@@ -741,7 +820,7 @@ public:
             std::unique_ptr<ASTnode> Else)
       : Cond(std::move(Cond)), Then(std::move(Then)), Else(std::move(Else)) {}
   void dump(int indent = 0) const override;
-
+  void to_string_inner(std::string& out, int indent) const override;
 };
 
 /// WhileExprAST - Expression class for while.
@@ -752,6 +831,7 @@ public:
   WhileExprAST(std::unique_ptr<ASTnode> cond, std::unique_ptr<ASTnode> body)
       : Cond(std::move(cond)), Body(std::move(body)) {}
   void dump(int indent = 0) const override;
+  void to_string_inner(std::string& out, int indent) const override;
 };
 
 /// ReturnAST - Class for a return value
@@ -761,6 +841,7 @@ class ReturnAST : public ASTnode {
 public:
   ReturnAST(std::unique_ptr<ASTnode> value) : Val(std::move(value)) {}
   void dump(int indent = 0) const override;
+  void to_string_inner(std::string& out, int indent) const override;
 };
 
 /// ArgsAST - Class for a function argumetn in a function call
@@ -1736,6 +1817,13 @@ static LLVMContext TheContext;
 static IRBuilder<> Builder(TheContext);
 static std::unique_ptr<Module> TheModule;
 
+// Stream an AST node using its to_string() output.
+llvm::raw_ostream& operator<<(llvm::raw_ostream& os, const ASTnode& ast) {
+  os << ast.to_string();
+  return os;
+}
+
+
 //===----------------------------------------------------------------------===//
 // AST Printer
 //===----------------------------------------------------------------------===//
@@ -1763,11 +1851,34 @@ void UnaryExprAST::dump(int indent) const {
   indentOut(indent); fprintf(stderr, "Unary('%c')\n", Op);
   if (Operand) Operand->dump(indent+1);
 }
+
+void UnaryExprAST::to_string_inner(std::string& out, int indent) const {
+  appendln(out, indent, std::string("Unary('") + Op + "')");
+  if (Operand) {
+    // indent child by +1
+    Operand->to_string_into(out, indent + 1);
+  }
+}
+
 void BinaryExprAST::dump(int indent) const {
   indentOut(indent); fprintf(stderr, "Binary(%s)\n", opTokName(OpTok));
   if (LHS) { indentOut(indent+1); fprintf(stderr, "LHS:\n"); LHS->dump(indent+2); }
   if (RHS) { indentOut(indent+1); fprintf(stderr, "RHS:\n"); RHS->dump(indent+2); }
 }
+
+void BinaryExprAST::to_string_inner(std::string& out, int indent) const {
+  appendln(out, indent, std::string("Binary(") + opTokName(OpTok) + ")");
+  if (LHS) {
+    appendln(out, indent + 1, "LHS:");
+    LHS->to_string_into(out, indent + 2);
+  }
+  if (RHS) {
+    appendln(out, indent + 1, "RHS:");
+    RHS->to_string_into(out, indent + 2);
+  }
+}
+
+
 void AssignAST::dump(int indent) const {
   indentOut(indent); fprintf(stderr, "Assign\n");
   indentOut(indent+1); fprintf(stderr, "LHS:\n");
@@ -1775,6 +1886,16 @@ void AssignAST::dump(int indent) const {
   indentOut(indent+1); fprintf(stderr, "RHS:\n");
   if (RHS) RHS->dump(indent+2);
 }
+
+void AssignAST::to_string_inner(std::string& out, int indent) const {
+  appendln(out, indent, "Assign");
+  appendln(out, indent + 1, "LHS:");
+  if (LHS) LHS->to_string_into(out, indent + 2);
+  appendln(out, indent + 1, "RHS:");
+  if (RHS) RHS->to_string_into(out, indent + 2);
+}
+
+
 void CallExprAST::dump(int indent) const {
   indentOut(indent); fprintf(stderr, "Call %s\n", Callee.c_str());
   int i = 0;
@@ -1783,6 +1904,16 @@ void CallExprAST::dump(int indent) const {
     if (a) a->dump(indent+2);
   }
 }
+
+void CallExprAST::to_string_inner(std::string& out, int indent) const {
+  appendln(out, indent, "Call " + Callee);
+  int i = 0;
+  for (auto& a : Args) {
+    appendln(out, indent + 1, "arg[" + std::to_string(i++) + "]:");
+    if (a) a->to_string_into(out, indent + 2);
+  }
+}
+
 
 // Statements
 void IfExprAST::dump(int indent) const {
@@ -1805,6 +1936,65 @@ void ReturnAST::dump(int indent) const {
   if (Val) { indentOut(indent+1); fprintf(stderr, "Val:\n"); Val->dump(indent+2); }
 }
 
+void BlockAST::to_string_inner(std::string& out, int indent) const {
+  appendln(out, indent, "Block");
+  appendln(out, indent + 1, "Locals:");
+  for (auto& d : LocalDecls) {
+    appendln(out, indent + 2, "VarDecl " + d->getName() + " : " + d->getType());
+  }
+  appendln(out, indent + 1, "Stmts:");
+  for (auto& s : Stmts) {
+    if (s) s->to_string_into(out, indent + 2);
+  }
+}
+
+void IfExprAST::to_string_inner(std::string& out, int indent) const {
+  appendln(out, indent, "If");
+  appendln(out, indent + 1, "Cond:");
+  if (Cond) Cond->to_string_into(out, indent + 2);
+  appendln(out, indent + 1, "Then:");
+  if (Then) Then->to_string_into(out, indent + 2);
+  if (Else) {
+    appendln(out, indent + 1, "Else:");
+    Else->to_string_into(out, indent + 2);
+  }
+}
+
+void WhileExprAST::to_string_inner(std::string& out, int indent) const {
+  appendln(out, indent, "While");
+  appendln(out, indent + 1, "Cond:");
+  if (Cond) Cond->to_string_into(out, indent + 2);
+  appendln(out, indent + 1, "Body:");
+  if (Body) Body->to_string_into(out, indent + 2);
+}
+
+void ReturnAST::to_string_inner(std::string& out, int indent) const {
+  appendln(out, indent, "Return");
+  if (Val) {
+    appendln(out, indent + 1, "Val:");
+    Val->to_string_into(out, indent + 2);
+  }
+}
+
+
+// ----- to_string_inner implementations for leaf nodes -----
+
+void IntASTnode::to_string_inner(std::string& out, int indent) const {
+  appendln(out, indent, "Int(" + std::to_string(Val) + ")");
+}
+
+void FloatASTnode::to_string_inner(std::string& out, int indent) const {
+  // use default float formatting (matches your dump pretty well)
+  appendln(out, indent, "Float(" + std::to_string(Val) + ")");
+}
+
+void BoolASTnode::to_string_inner(std::string& out, int indent) const {
+  appendln(out, indent, std::string("Bool(") + (Bool ? "true" : "false") + ")");
+}
+
+void VariableASTnode::to_string_inner(std::string& out, int indent) const {
+  appendln(out, indent, "Var(" + Name + ")");
+}
 
 //===----------------------------------------------------------------------===//
 // Main driver code.
@@ -1847,11 +2037,9 @@ int main(int argc, char **argv) {
     }
   }
 
-  fprintf(stderr, "=== AST (top-level decls) ===\n");
   for (auto& d : gTopDecls) {
-    d->dump();           // no RTTI needed
+    llvm::outs() << *d << "\n";   // uses to_string() -> to_string_inner(...)
   }
-
 
   // Make the module, which holds all the code.
   TheModule = std::make_unique<Module>("mini-c", TheContext);

@@ -15,3 +15,7 @@ code/output.ll
 .DS_Store
 Thumbs.db
 EOF
+
+# Ignore local learning files
+learn
+learn.cpp
