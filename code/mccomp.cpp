@@ -410,6 +410,9 @@ static TOKEN gettok() {
 static TOKEN CurTok;
 static std::deque<TOKEN> tok_buffer;
 
+
+
+
 static TOKEN getNextToken() {
 
   if (tok_buffer.size() == 0)
@@ -422,15 +425,39 @@ static TOKEN getNextToken() {
 }
 
 static void putBackToken(TOKEN tok) { tok_buffer.push_front(tok); }
+// Simple indent helper used by dump() methods
+static void indentOut(int n) { for (int i = 0; i < n; ++i) fprintf(stderr, "  "); }
+
+// Helper to pretty-print token/operator names
+static const char* opTokName(int t) {
+  switch (t) {
+    case PLUS: return "+";   case MINUS: return "-";
+    case ASTERIX: return "*"; case DIV: return "/";
+    case MOD: return "%";    case LT: return "<";
+    case LE: return "<=";    case GT: return ">";
+    case GE: return ">=";    case EQ: return "==";
+    case NE: return "!=";    case AND: return "&&";
+    case OR: return "||";
+    default: return "?";
+  }
+}
+
 
 /// ASTnode - Base class for all AST nodes.
 class ASTnode {
-
 public:
   virtual ~ASTnode() {}
-  virtual Value *codegen() { return nullptr; };
-  virtual std::string to_string() const { return ""; };
+  virtual Value *codegen() { return nullptr; }
+  virtual std::string to_string() const { return ""; }
+
+  // NEW:
+  virtual void dump(int indent = 0) const {
+    // fallback (optional)
+    for (int i = 0; i < indent; ++i) fprintf(stderr, "  ");
+    fprintf(stderr, "%s\n", to_string().c_str());
+  }
 };
+
 
 /// IntASTnode - Class for integer literals like 1, 2, 10,
 class IntASTnode : public ASTnode {
@@ -441,6 +468,7 @@ class IntASTnode : public ASTnode {
 public:
   IntASTnode(TOKEN tok, int val) : Val(val), Tok(tok) {}
   const std::string &getType() const { return Tok.lexeme; }
+  void dump(int indent = 0) const override;
 };
 
 /// BoolASTnode - Class for boolean literals true and false,
@@ -451,6 +479,7 @@ class BoolASTnode : public ASTnode {
 public:
   BoolASTnode(TOKEN tok, bool B) : Bool(B), Tok(tok) {}
   const std::string &getType() const { return Tok.lexeme; }
+  void dump(int indent = 0) const override;
 };
 
 /// FloatASTnode - Node class for floating point literals like "1.0".
@@ -461,6 +490,7 @@ class FloatASTnode : public ASTnode {
 public:
   FloatASTnode(TOKEN tok, double Val) : Val(Val), Tok(tok) {}
   const std::string &getType() const { return Tok.lexeme; }
+  void dump(int indent = 0) const override;
 };
 
 /// VariableASTnode - Class for referencing a variable (i.e. identifier), like
@@ -478,6 +508,7 @@ public:
   const std::string &getName() const { return Name; }
   const std::string &getType() const { return Tok.lexeme; }
   const IDENT_TYPE getVarType() const { return VarType; }
+  void dump(int indent = 0) const override;
 };
 
 /// ParamAST - Class for a parameter declaration
@@ -570,6 +601,7 @@ public:
   // Virtual Methods
   Value *codegen() override { return nullptr; }
   std::string to_string() const override { return "UnaryExpr"; }
+  void dump(int indent = 0) const override;
 };
 
 /// BinaryExprAST - Expression class for binary operators
@@ -588,8 +620,8 @@ public:
 
   Value *codegen() override { return nullptr; }
   std::string to_string() const override { return "BinaryExpr"; }
+  void dump(int indent = 0) const override;
 };
-
 
 /// AssignAST - Expression class for assignment: IDENT = expr
 class AssignAST : public ASTnode {
@@ -606,6 +638,7 @@ public:
   
   Value *codegen() override { return nullptr; }
   std::string to_string() const override { return "Assignment"; }
+  void dump(int indent = 0) const override;
 };
 
 
@@ -624,18 +657,39 @@ public:
   
   Value *codegen() override { return nullptr; }
   std::string to_string() const override { return "FunctionCall"; }
+  void dump(int indent = 0) const override;
 };
 
 /// BlockAST - Class for a block with declarations followed by statements
 class BlockAST : public ASTnode {
-  std::vector<std::unique_ptr<VarDeclAST>> LocalDecls; // vector of local decls
-  std::vector<std::unique_ptr<ASTnode>> Stmts;         // vector of statements
+  std::vector<std::unique_ptr<VarDeclAST>> LocalDecls;
+  std::vector<std::unique_ptr<ASTnode>> Stmts;
 
 public:
   BlockAST(std::vector<std::unique_ptr<VarDeclAST>> localDecls,
            std::vector<std::unique_ptr<ASTnode>> stmts)
       : LocalDecls(std::move(localDecls)), Stmts(std::move(stmts)) {}
+
+  // NEW getters:
+  const std::vector<std::unique_ptr<VarDeclAST>>& getLocalDecls() const { return LocalDecls; }
+  const std::vector<std::unique_ptr<ASTnode>>&    getStmts() const      { return Stmts; }
+
+  // NEW dump:
+  void dump(int indent = 0) const override {
+    indentOut(indent); fprintf(stderr, "Block\n");
+    indentOut(indent+1); fprintf(stderr, "Locals:\n");
+    for (auto &d : LocalDecls) {
+      indentOut(indent+2); fprintf(stderr, "VarDecl %s : %s\n",
+        d->getName().c_str(), d->getType().c_str());
+    }
+    indentOut(indent+1); fprintf(stderr, "Stmts:\n");
+    for (auto &s : Stmts) {
+      if (s) s->dump(indent + 2);
+    }
+  }
 };
+
+
 
 /// FunctionDeclAST - This class represents a function definition itself.
 class FunctionDeclAST : public DeclAST {
@@ -646,7 +700,37 @@ public:
   FunctionDeclAST(std::unique_ptr<FunctionPrototypeAST> Proto,
                   std::unique_ptr<ASTnode> Block)
       : Proto(std::move(Proto)), Block(std::move(Block)) {}
+
+  // NEW getters:
+  const FunctionPrototypeAST* getProto() const { return Proto.get(); }
+  const ASTnode*              getBody()  const { return Block.get(); }
+
+  // NEW dump:
+  void dump(int indent = 0) const override {
+    indentOut(indent);
+    fprintf(stderr, "Function %s : %s\n",
+            Proto ? Proto->getName().c_str() : "<anon>",
+            Proto ? Proto->getType().c_str() : "<unknown>");
+    if (Proto) {
+      indentOut(indent+1); fprintf(stderr, "Params (%d):\n", Proto->getSize());
+      int i = 0;
+      for (auto &p : Proto->getParams()) {
+        indentOut(indent+2);
+        fprintf(stderr, "%d: %s : %s\n", i++, p->getName().c_str(), p->getType().c_str());
+      }
+    }
+    if (Block) {
+      indentOut(indent+1); fprintf(stderr, "Body:\n");
+      Block->dump(indent + 2);
+    }
+  }
 };
+
+
+
+static std::vector<std::unique_ptr<FunctionPrototypeAST>> gExterns;
+static std::vector<std::unique_ptr<ASTnode>>              gTopDecls;
+
 
 /// IfExprAST - Expression class for if/then/else.
 class IfExprAST : public ASTnode {
@@ -656,6 +740,7 @@ public:
   IfExprAST(std::unique_ptr<ASTnode> Cond, std::unique_ptr<ASTnode> Then,
             std::unique_ptr<ASTnode> Else)
       : Cond(std::move(Cond)), Then(std::move(Then)), Else(std::move(Else)) {}
+  void dump(int indent = 0) const override;
 
 };
 
@@ -666,7 +751,7 @@ class WhileExprAST : public ASTnode {
 public:
   WhileExprAST(std::unique_ptr<ASTnode> cond, std::unique_ptr<ASTnode> body)
       : Cond(std::move(cond)), Body(std::move(body)) {}
-
+  void dump(int indent = 0) const override;
 };
 
 /// ReturnAST - Class for a return value
@@ -675,7 +760,7 @@ class ReturnAST : public ASTnode {
 
 public:
   ReturnAST(std::unique_ptr<ASTnode> value) : Val(std::move(value)) {}
-
+  void dump(int indent = 0) const override;
 };
 
 /// ArgsAST - Class for a function argumetn in a function call
@@ -1519,6 +1604,7 @@ static void ParseDeclListPrime() {
 
     if (auto decl = ParseDecl()) {
       fprintf(stderr, "Parsed a top-level variable or function declaration\n");
+      gTopDecls.push_back(std::move(decl));  // store it
     }
     ParseDeclListPrime();
   } else if (CurTok.type == EOF_TOK) { // FOLLOW(decl_list_prime)
@@ -1534,6 +1620,7 @@ static void ParseDeclList() {
   auto decl = ParseDecl();
   if (decl) {
     fprintf(stderr, "Parsed a top-level variable or function declaration\n");
+    gTopDecls.push_back(std::move(decl));  // store it
     ParseDeclListPrime();
   }
 }
@@ -1604,6 +1691,7 @@ static void ParseExternListPrime() {
     if (auto Extern = ParseExtern()) {
       fprintf(stderr,
               "Parsed a top-level external function declaration -- 2\n");
+      gExterns.push_back(std::move(Extern));
     }
     ParseExternListPrime();
   } else if (CurTok.type == VOID_TOK || CurTok.type == INT_TOK ||
@@ -1622,6 +1710,7 @@ static void ParseExternList() {
   if (Extern) {
     fprintf(stderr, "Parsed a top-level external function declaration -- 1\n");
     // fprintf(stderr, "Current token: %s \n", CurTok.lexeme.c_str());
+    gExterns.push_back(std::move(Extern));  // store it
     if (CurTok.type == EXTERN)
       ParseExternListPrime();
   }
@@ -1655,6 +1744,68 @@ static std::unique_ptr<Module> TheModule;
 //   printf("%s\n",getType().c_str());
 // }
 
+// Literals & variables
+void IntASTnode::dump(int indent) const {
+  indentOut(indent); fprintf(stderr, "Int(%d)\n", Val);
+}
+void FloatASTnode::dump(int indent) const {
+  indentOut(indent); fprintf(stderr, "Float(%g)\n", Val);
+}
+void BoolASTnode::dump(int indent) const {
+  indentOut(indent); fprintf(stderr, "Bool(%s)\n", Bool ? "true" : "false");
+}
+void VariableASTnode::dump(int indent) const {
+  indentOut(indent); fprintf(stderr, "Var(%s)\n", Name.c_str());
+}
+
+// Expressions
+void UnaryExprAST::dump(int indent) const {
+  indentOut(indent); fprintf(stderr, "Unary('%c')\n", Op);
+  if (Operand) Operand->dump(indent+1);
+}
+void BinaryExprAST::dump(int indent) const {
+  indentOut(indent); fprintf(stderr, "Binary(%s)\n", opTokName(OpTok));
+  if (LHS) { indentOut(indent+1); fprintf(stderr, "LHS:\n"); LHS->dump(indent+2); }
+  if (RHS) { indentOut(indent+1); fprintf(stderr, "RHS:\n"); RHS->dump(indent+2); }
+}
+void AssignAST::dump(int indent) const {
+  indentOut(indent); fprintf(stderr, "Assign\n");
+  indentOut(indent+1); fprintf(stderr, "LHS:\n");
+  if (LHS) LHS->dump(indent+2);
+  indentOut(indent+1); fprintf(stderr, "RHS:\n");
+  if (RHS) RHS->dump(indent+2);
+}
+void CallExprAST::dump(int indent) const {
+  indentOut(indent); fprintf(stderr, "Call %s\n", Callee.c_str());
+  int i = 0;
+  for (auto &a : Args) {
+    indentOut(indent+1); fprintf(stderr, "arg[%d]:\n", i++);
+    if (a) a->dump(indent+2);
+  }
+}
+
+// Statements
+void IfExprAST::dump(int indent) const {
+  indentOut(indent); fprintf(stderr, "If\n");
+  indentOut(indent+1); fprintf(stderr, "Cond:\n");
+  if (Cond) Cond->dump(indent+2);
+  indentOut(indent+1); fprintf(stderr, "Then:\n");
+  if (Then) Then->dump(indent+2);
+  if (Else) { indentOut(indent+1); fprintf(stderr, "Else:\n"); Else->dump(indent+2); }
+}
+void WhileExprAST::dump(int indent) const {
+  indentOut(indent); fprintf(stderr, "While\n");
+  indentOut(indent+1); fprintf(stderr, "Cond:\n");
+  if (Cond) Cond->dump(indent+2);
+  indentOut(indent+1); fprintf(stderr, "Body:\n");
+  if (Body) Body->dump(indent+2);
+}
+void ReturnAST::dump(int indent) const {
+  indentOut(indent); fprintf(stderr, "Return\n");
+  if (Val) { indentOut(indent+1); fprintf(stderr, "Val:\n"); Val->dump(indent+2); }
+}
+
+
 //===----------------------------------------------------------------------===//
 // Main driver code.
 //===----------------------------------------------------------------------===//
@@ -1685,6 +1836,22 @@ int main(int argc, char **argv) {
   // RUN THE PARSER (Task 2)
   parser();
   fprintf(stderr, "Parsing Finished\n");
+
+    // ---- Dump AST ----
+  fprintf(stderr, "=== AST (externs) ===\n");
+  for (auto& ex : gExterns) {
+    fprintf(stderr, "Extern %s : %s (params=%d)\n",
+      ex->getName().c_str(), ex->getType().c_str(), ex->getSize());
+    for (auto& p : ex->getParams()) {
+      fprintf(stderr, "  - %s %s\n", p->getType().c_str(), p->getName().c_str());
+    }
+  }
+
+  fprintf(stderr, "=== AST (top-level decls) ===\n");
+  for (auto& d : gTopDecls) {
+    d->dump();           // no RTTI needed
+  }
+
 
   // Make the module, which holds all the code.
   TheModule = std::make_unique<Module>("mini-c", TheContext);
