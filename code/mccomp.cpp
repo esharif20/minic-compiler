@@ -1817,11 +1817,108 @@ static LLVMContext TheContext;
 static IRBuilder<> Builder(TheContext);
 static std::unique_ptr<Module> TheModule;
 
-// Stream an AST node using its to_string() output.
+// ---- Codegen globals and helpers ----
+
+// Local symbols for the current scope (name -> alloca).
+static std::map<std::string, AllocaInst*> NamedValues;
+
+// Global symbols for file scope (name -> GlobalVariable).
+static std::map<std::string, GlobalVariable*> GlobalNamedValues;
+
+// Canonical MiniC types
+static Type* miniCIntTy()   { return Type::getInt32Ty(TheContext); }
+static Type* miniCBoolTy()  { return Type::getInt1Ty(TheContext);  }
+static Type* miniCFloatTy() { return Type::getDoubleTy(TheContext); } // use double
+
+// Map parsed type strings to LLVM types
+static Type* typeFromString(const std::string& t) {
+  if (t == "int")   return miniCIntTy();
+  if (t == "bool")  return miniCBoolTy();
+  if (t == "float") return miniCFloatTy();
+  if (t == "void")  return Type::getVoidTy(TheContext);
+  fprintf(stderr, "Unknown type '%s'\n", t.c_str());
+  exit(2);
+}
+
+// Create a stack slot in a function's entry block
+static AllocaInst* CreateEntryAlloca(Function* F, StringRef VarName, Type* Ty) {
+  IRBuilder<> tmp(&F->getEntryBlock(), F->getEntryBlock().begin()); // place at start
+  return tmp.CreateAlloca(Ty, nullptr, VarName);                     // %VarName = alloca Ty
+}
+
+// ---- Scopes ----
+
+// Shadow stack of local maps for block scopes
+static std::vector<std::map<std::string, AllocaInst*>> ScopeStack;
+
+// Start a new scope by snapshotting the current locals
+static void pushScope() {
+  ScopeStack.push_back(NamedValues);  // inherit outer bindings
+}
+
+// Restore the previous scope
+static void popScope() {
+  if (ScopeStack.empty()) {
+    fprintf(stderr, "Scope stack underflow\n");
+    exit(2);
+  }
+  NamedValues = std::move(ScopeStack.back());
+  ScopeStack.pop_back();
+}
+
+// Lookup helpers
+static AllocaInst* lookupLocal(const std::string& name) {
+  auto it = NamedValues.find(name);
+  return (it != NamedValues.end()) ? it->second : nullptr;
+}
+
+static GlobalVariable* lookupGlobal(const std::string& name) {
+  return TheModule->getGlobalVariable(name, /*AllowInternal*/ true);
+}
+
+// ---- Type helpers ----
+
+static inline bool isInt(Type* T)   { return T->isIntegerTy(32); }
+static inline bool isBool(Type* T)  { return T->isIntegerTy(1);  }
+static inline bool isFloat(Type* T) { return T->isDoubleTy();    }
+
+// Zero initialiser for a type
+static Constant* zeroOf(Type* T) {
+  if (isInt(T))         return ConstantInt::get(T, 0, true);
+  if (isBool(T))        return ConstantInt::get(T, 0, false);
+  if (isFloat(T))       return ConstantFP::get(T, 0.0);
+  if (T->isPointerTy()) return ConstantPointerNull::get(cast<PointerType>(T));
+  return UndefValue::get(T);
+}
+
+// Safe casts with basic MiniC rules, error on illegal casts
+static Value* castTo(Type* dstTy, Value* v, const char* context) {
+  Type* srcTy = v->getType();
+  if (srcTy == dstTy) return v;
+
+  // int <-> double
+  if (isInt(srcTy)   && isFloat(dstTy)) return Builder.CreateSIToFP(v, dstTy, "sitofp");
+  if (isFloat(srcTy) && isInt(dstTy))   return Builder.CreateFPToSI(v, dstTy, "fptosi");
+
+  // bool -> int/double
+  if (isBool(srcTy) && isInt(dstTy))    return Builder.CreateZExt(v, dstTy, "b2i");
+  if (isBool(srcTy) && isFloat(dstTy))  return Builder.CreateUIToFP(v, dstTy, "b2f");
+
+  // int/double -> bool (compare with zero)
+  if (isInt(srcTy)   && isBool(dstTy))  return Builder.CreateICmpNE(v, ConstantInt::get(srcTy, 0), "i2b");
+  if (isFloat(srcTy) && isBool(dstTy))  return Builder.CreateFCmpONE(v, ConstantFP::get(srcTy, 0.0), "f2b");
+
+  fprintf(stderr, "Type error in %s: cannot cast from ", context);
+  srcTy->print(errs()); errs() << " to "; dstTy->print(errs()); errs() << "\n";
+  exit(2);
+}
+
+// Stream an AST node using its to_string()
 llvm::raw_ostream& operator<<(llvm::raw_ostream& os, const ASTnode& ast) {
   os << ast.to_string();
   return os;
 }
+
 
 
 //===----------------------------------------------------------------------===//
