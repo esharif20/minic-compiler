@@ -521,6 +521,7 @@ public:
   const std::string &getType() const { return Tok.lexeme; }
   void dump(int indent = 0) const override;
   void to_string_inner(std::string& out, int indent) const override;
+  Value *codegen() override;
 };
 
 /// BoolASTnode - Class for boolean literals true and false,
@@ -533,6 +534,7 @@ public:
   const std::string &getType() const { return Tok.lexeme; }
   void dump(int indent = 0) const override;
   void to_string_inner(std::string& out, int indent) const override;
+  Value *codegen() override;
 };
 
 /// FloatASTnode - Node class for floating point literals like "1.0".
@@ -545,6 +547,7 @@ public:
   const std::string &getType() const { return Tok.lexeme; }
   void dump(int indent = 0) const override;
   void to_string_inner(std::string& out, int indent) const override;
+  Value *codegen() override;
 };
 
 /// VariableASTnode - Class for referencing a variable (i.e. identifier), like
@@ -1820,10 +1823,13 @@ static std::unique_ptr<Module> TheModule;
 
 // ---- Codegen globals and helpers ----
 
-// Local symbols for the current scope (name -> alloca).
+// Current frame locals (name -> alloca)
 static std::map<std::string, AllocaInst*> NamedValues;
 
-// Global symbols for file scope (name -> GlobalVariable).
+// Stack of outer frames
+static std::vector<std::map<std::string, AllocaInst*>> ScopeStack;
+
+// Global symbols for file scope (name -> GlobalVariable)
 static std::map<std::string, GlobalVariable*> GlobalNamedValues;
 
 // Canonical MiniC types
@@ -1849,12 +1855,10 @@ static AllocaInst* CreateEntryAlloca(Function* F, StringRef VarName, Type* Ty) {
 
 // ---- Scopes ----
 
-// Shadow stack of local maps for block scopes
-static std::vector<std::map<std::string, AllocaInst*>> ScopeStack;
-
-// Start a new scope by snapshotting the current locals
+// Start a new scope with a fresh frame
 static void pushScope() {
-  ScopeStack.push_back(NamedValues);  // inherit outer bindings
+  ScopeStack.push_back(std::move(NamedValues));
+  NamedValues.clear();
 }
 
 // Restore the previous scope
@@ -1871,6 +1875,12 @@ static void popScope() {
 static AllocaInst* lookupLocal(const std::string& name) {
   auto it = NamedValues.find(name);
   return (it != NamedValues.end()) ? it->second : nullptr;
+}
+
+// Only check in current frame for redeclarations
+static AllocaInst* lookupLocalCurrent(const std::string& name) {
+  auto it = NamedValues.find(name);
+  return it == NamedValues.end() ? nullptr : it->second;
 }
 
 static GlobalVariable* lookupGlobal(const std::string& name) {
@@ -1917,10 +1927,8 @@ static Value* castTo(Type* dstTy, Value* v, const char* context) {
 // ---- Block codegen ----
 // Blocks create a new scope, allocate locals in the function entry, then emit statements.
 Value* BlockAST::codegen() {
-  // Enter new lexical scope
   pushScope();
 
-  // We must be inside a function to place allocas in its entry
   BasicBlock* curBB = Builder.GetInsertBlock();
   if (!curBB) {
     fprintf(stderr, "Block codegen used with no active insertion block\n");
@@ -1937,7 +1945,7 @@ Value* BlockAST::codegen() {
     const std::string& name = d->getName();
     Type* ty = typeFromString(d->getType());
 
-    if (lookupLocal(name)) {
+    if (lookupLocalCurrent(name)) {
       fprintf(stderr, "Redeclaration of local '%s'\n", name.c_str());
       exit(2);
     }
@@ -1952,17 +1960,33 @@ Value* BlockAST::codegen() {
     if (s) s->codegen();
   }
 
-  // Leave scope
   popScope();
   return nullptr;
 }
 
+// ---- Literals codegen ----
+
+// int literal -> i32 constant
+Value* IntASTnode::codegen() {
+  return ConstantInt::get(miniCIntTy(), Val, /*isSigned=*/true);
+}
+
+// float literal -> double constant
+Value* FloatASTnode::codegen() {
+  return ConstantFP::get(miniCFloatTy(), Val);
+}
+
+// bool literal -> i1 constant
+Value* BoolASTnode::codegen() {
+  return ConstantInt::get(miniCBoolTy(), Bool ? 1 : 0);
+}
 
 // Stream an AST node using its to_string()
 llvm::raw_ostream& operator<<(llvm::raw_ostream& os, const ASTnode& ast) {
   os << ast.to_string();
   return os;
 }
+
 
 
 
