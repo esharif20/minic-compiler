@@ -745,6 +745,7 @@ public:
     }
   }
   void to_string_inner(std::string& out, int indent) const override;
+  Value *codegen() override;
 };
 
 
@@ -1912,6 +1913,50 @@ static Value* castTo(Type* dstTy, Value* v, const char* context) {
   srcTy->print(errs()); errs() << " to "; dstTy->print(errs()); errs() << "\n";
   exit(2);
 }
+
+// ---- Block codegen ----
+// Blocks create a new scope, allocate locals in the function entry, then emit statements.
+Value* BlockAST::codegen() {
+  // Enter new lexical scope
+  pushScope();
+
+  // We must be inside a function to place allocas in its entry
+  BasicBlock* curBB = Builder.GetInsertBlock();
+  if (!curBB) {
+    fprintf(stderr, "Block codegen used with no active insertion block\n");
+    exit(2);
+  }
+  Function* F = curBB->getParent();
+  if (!F) {
+    fprintf(stderr, "Block codegen used outside of a function\n");
+    exit(2);
+  }
+
+  // Allocate and zero-initialise each local in the function entry
+  for (auto& d : LocalDecls) {
+    const std::string& name = d->getName();
+    Type* ty = typeFromString(d->getType());
+
+    if (lookupLocal(name)) {
+      fprintf(stderr, "Redeclaration of local '%s'\n", name.c_str());
+      exit(2);
+    }
+
+    AllocaInst* slot = CreateEntryAlloca(F, name, ty);
+    Builder.CreateStore(zeroOf(ty), slot);
+    NamedValues[name] = slot;
+  }
+
+  // Emit statements in order
+  for (auto& s : Stmts) {
+    if (s) s->codegen();
+  }
+
+  // Leave scope
+  popScope();
+  return nullptr;
+}
+
 
 // Stream an AST node using its to_string()
 llvm::raw_ostream& operator<<(llvm::raw_ostream& os, const ASTnode& ast) {
