@@ -567,6 +567,7 @@ public:
   const IDENT_TYPE getVarType() const { return VarType; }
   void dump(int indent = 0) const override;
   void to_string_inner(std::string& out, int indent) const override;
+  Value *codegen() override;
 };
 
 /// ParamAST - Class for a parameter declaration
@@ -1979,6 +1980,25 @@ Value* FloatASTnode::codegen() {
 // bool literal -> i1 constant
 Value* BoolASTnode::codegen() {
   return ConstantInt::get(miniCBoolTy(), Bool ? 1 : 0);
+}
+
+// --- Variables codegen ---
+Value* VariableASTnode::codegen() {  
+    AllocaInst* local = lookupLocal(Name);  
+    if (local) {
+        auto* val = Builder.CreateLoad(local->getAllocatedType(), local, Name.c_str()); 
+        return val;
+    }
+    
+    GlobalVariable* global = lookupGlobal(Name);  
+    if (global) {
+        auto* val = Builder.CreateLoad(global->getValueType(), global, Name.c_str());
+        return val;  
+    }
+    
+    // Not found - error!
+    fprintf(stderr, "Unknown variable name: %s\n", Name.c_str());
+    exit(2);
 }
 
 // Stream an AST node using its to_string()
