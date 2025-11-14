@@ -660,9 +660,9 @@ public:
   ASTnode* getOperand() const { return Operand.get(); }
   
   // Virtual Methods
-  Value *codegen() override { return nullptr; }
   void dump(int indent = 0) const override;
   void to_string_inner(std::string& out, int indent) const override;
+  Value *codegen() override;
 };
 
 /// BinaryExprAST - Expression class for binary operators
@@ -1998,6 +1998,31 @@ Value* VariableASTnode::codegen() {
     
     // Not found - error!
     fprintf(stderr, "Unknown variable name: %s\n", Name.c_str());
+    exit(2);
+}
+
+Value* UnaryExprAST::codegen(){
+    Value *v = Operand->codegen();
+    if (!v) return nullptr;  
+    Type* T = v->getType();
+    
+    if (Op == '-') {
+        if (isInt(T)) {
+            return Builder.CreateNeg(v, "ineg");
+        }
+        if (isFloat(T)) {
+            return Builder.CreateFNeg(v, "fneg");
+        }
+        Value* bool_int = castTo(miniCIntTy(), v, "u-");
+        return Builder.CreateNeg(bool_int, "ineg");
+    }
+    
+    if (Op == '!'){  
+        Value* bool_val = castTo(miniCBoolTy(), v , "u!");
+        return Builder.CreateNot(bool_val, "not"); 
+    }
+    
+    fprintf(stderr , "unkown unary operator, '%c'\n", Op); 
     exit(2);
 }
 
