@@ -27,6 +27,7 @@
 #include <map>
 #include <memory>
 #include <queue>
+#include <deque>
 #include <string.h>
 #include <string>
 #include <system_error>
@@ -611,6 +612,7 @@ public:
       : Var(std::move(var)), Type(type) {}
   const std::string &getType() const { return Type; }
   const std::string &getName() const { return Var->getName(); }
+  Value *codegen() override;
 };
 
 /// FunctionPrototypeAST - Class for a function declaration's signature
@@ -679,28 +681,29 @@ public:
   ASTnode* getLHS() const { return LHS.get(); }
   ASTnode* getRHS() const { return RHS.get(); }
 
-  Value *codegen() override { return nullptr; }
+  Value *codegen() override;
   void dump(int indent = 0) const override;
   void to_string_inner(std::string& out, int indent) const override;
 };
 
 /// AssignAST - Expression class for assignment: IDENT = expr
 class AssignAST : public ASTnode {
-  std::unique_ptr<VariableASTnode> LHS;  // Variable being assigned to
-  std::unique_ptr<ASTnode> RHS;          // Expression value
+  std::unique_ptr<VariableASTnode> LHS;
+  std::unique_ptr<ASTnode> RHS;
 
 public:
-  AssignAST(std::unique_ptr<VariableASTnode> lhs, 
+  AssignAST(std::unique_ptr<VariableASTnode> lhs,
             std::unique_ptr<ASTnode> rhs)
       : LHS(std::move(lhs)), RHS(std::move(rhs)) {}
-  
+
   VariableASTnode* getLHS() const { return LHS.get(); }
   ASTnode* getRHS() const { return RHS.get(); }
-  
-  Value *codegen() override { return nullptr; }
+
+  Value* codegen() override;           // declaration only
   void dump(int indent = 0) const override;
   void to_string_inner(std::string& out, int indent) const override;
 };
+
 
 
 /// CallExprAST - Expression class for function calls
@@ -788,6 +791,7 @@ public:
     }
   }
   void to_string_inner(std::string& out, int indent) const override;
+  Value *codegen() override;
 };
 
 void FunctionDeclAST::to_string_inner(std::string& out, int indent) const {
@@ -1848,6 +1852,37 @@ static Type* typeFromString(const std::string& t) {
   exit(2);
 }
 
+// ---- low level type predicates ----
+static inline bool isInt(Type* T)   { return T->isIntegerTy(32); }
+static inline bool isBool(Type* T)  { return T->isIntegerTy(1);  }
+static inline bool isFloat(Type* T) { return T->isDoubleTy();    }
+
+// Thin wrappers used by expression codegen
+static inline bool isIntTy(Type* T)   { return isInt(T); }
+static inline bool isBoolTy(Type* T)  { return isBool(T); }
+static inline bool isFloatTy(Type* T) { return isFloat(T); }
+
+static inline Type* getIntTy()   { return miniCIntTy(); }
+static inline Type* getBoolTy()  { return miniCBoolTy(); }
+static inline Type* getFloatTy() { return miniCFloatTy(); }
+
+// Decide which type wins when mixing types
+// int + float  → float
+// bool + int   → int
+// bool + bool  → bool
+static Type* getCommonType(Type* T1, Type* T2) {
+  if (T1 == T2)
+    return T1;
+
+  if (isFloatTy(T1) || isFloatTy(T2))
+    return getFloatTy();
+
+  if (isIntTy(T1) || isIntTy(T2))
+    return getIntTy();
+
+  return getBoolTy();
+}
+
 // Create a stack slot in a function's entry block
 static AllocaInst* CreateEntryAlloca(Function* F, StringRef VarName, Type* Ty) {
   IRBuilder<> tmp(&F->getEntryBlock(), F->getEntryBlock().begin()); // place at start
@@ -1874,9 +1909,22 @@ static void popScope() {
 
 // Lookup helpers
 static AllocaInst* lookupLocal(const std::string& name) {
+  // first look in current scope
   auto it = NamedValues.find(name);
-  return (it != NamedValues.end()) ? it->second : nullptr;
+  if (it != NamedValues.end())
+    return it->second;
+    
+  // then walk outer scopes from innermost to outermost
+  for (auto scope = ScopeStack.rbegin(); scope != ScopeStack.rend(); ++scope) {
+    auto curr_scope = scope->find(name);
+    if (curr_scope != scope->end()) {
+      return curr_scope->second;
+    }
+  }
+  
+  return nullptr;
 }
+
 
 // Only check in current frame for redeclarations
 static AllocaInst* lookupLocalCurrent(const std::string& name) {
@@ -1888,11 +1936,6 @@ static GlobalVariable* lookupGlobal(const std::string& name) {
   return TheModule->getGlobalVariable(name, /*AllowInternal*/ true);
 }
 
-// ---- Type helpers ----
-
-static inline bool isInt(Type* T)   { return T->isIntegerTy(32); }
-static inline bool isBool(Type* T)  { return T->isIntegerTy(1);  }
-static inline bool isFloat(Type* T) { return T->isDoubleTy();    }
 
 // Zero initialiser for a type
 static Constant* zeroOf(Type* T) {
@@ -2025,6 +2068,252 @@ Value* UnaryExprAST::codegen(){
     fprintf(stderr , "unkown unary operator, '%c'\n", Op); 
     exit(2);
 }
+
+Value* AssignAST::codegen() {
+    auto* lhsVar = getLHS();
+    const std::string& name = lhsVar->getName();
+
+    if (AllocaInst* local_var_memory = lookupLocal(name)) {
+        Type* dstTy = local_var_memory->getAllocatedType();
+        Value* rhs = getRHS()->codegen();
+        Value* rhsC = castTo(dstTy, rhs, "assign");
+        Builder.CreateStore(rhsC, local_var_memory);
+        return rhsC;
+    }
+
+    if (GlobalVariable* g = lookupGlobal(name)) {
+        Type* dstTy = g->getValueType();
+        Value* rhs = getRHS()->codegen();
+        Value* rhsC = castTo(dstTy, rhs, "assign");
+        Builder.CreateStore(rhsC, g);
+        return rhsC;
+    }
+
+    fprintf(stderr, "Assignment to unknown variable '%s'\n", name.c_str());
+    exit(2);
+}
+
+
+Value* BinaryExprAST::codegen() {
+  Value* lhs = getLHS()->codegen();
+  Value* rhs = getRHS()->codegen();
+  if (!lhs || !rhs) return nullptr;
+
+  Type* lhs_type = lhs->getType();
+  Type* rhs_type = rhs->getType();
+  Type* common_type = getCommonType(lhs_type, rhs_type);
+
+  int op = getOpTok();
+
+  // Logical operators: force both sides to bool first
+  if (op == AND || op == OR) {
+    lhs = castTo(miniCBoolTy(), lhs, "logical lhs");
+    rhs = castTo(miniCBoolTy(), rhs, "logical rhs");
+
+    if (op == AND) {
+      return Builder.CreateAnd(lhs, rhs, "andtmp");
+    } else { // OR
+      return Builder.CreateOr(lhs, rhs, "ortmp");
+    }
+  }
+
+  // For arithmetic and comparisons, promote both sides to the common type
+  lhs = castTo(common_type, lhs, "binary lhs");
+  rhs = castTo(common_type, rhs, "binary rhs");
+
+  bool useFloat = isFloat(common_type);
+  bool useIntLike = isInt(common_type) || isBool(common_type);
+
+  switch (op) {
+    // ── arithmetic ─────────────────────
+    case PLUS:
+      if (useFloat)   return Builder.CreateFAdd(lhs, rhs, "addtmp");
+      if (useIntLike) return Builder.CreateAdd(lhs, rhs, "addtmp");
+      fprintf(stderr, "Error: invalid types for '+'\n");
+      exit(2);
+
+    case MINUS:
+      if (useFloat)   return Builder.CreateFSub(lhs, rhs, "subtmp");
+      if (useIntLike) return Builder.CreateSub(lhs, rhs, "subtmp");
+      fprintf(stderr, "Error: invalid types for '-'\n");
+      exit(2);
+
+    case ASTERIX:
+      if (useFloat)   return Builder.CreateFMul(lhs, rhs, "multmp");
+      if (useIntLike) return Builder.CreateMul(lhs, rhs, "multmp");
+      fprintf(stderr, "Error: invalid types for '*'\n");
+      exit(2);
+
+    case DIV:
+      if (useFloat)   return Builder.CreateFDiv(lhs, rhs, "divtmp");
+      if (useIntLike) return Builder.CreateSDiv(lhs, rhs, "divtmp");
+      fprintf(stderr, "Error: invalid types for '/'\n");
+      exit(2);
+
+    case MOD:
+      if (useFloat) {
+        fprintf(stderr, "Error: '%%' not defined for float\n");
+        exit(2);
+      }
+      if (useIntLike) {
+        return Builder.CreateSRem(lhs, rhs, "modtmp");
+      }
+      fprintf(stderr, "Error: invalid types for '%%'\n");
+      exit(2);
+
+
+    // ── comparisons (return i1) ────────
+    case LT:
+      if (useFloat) return Builder.CreateFCmpOLT(lhs, rhs, "cmptmp");
+      if (useIntLike) return Builder.CreateICmpSLT(lhs, rhs, "cmptmp");
+      fprintf(stderr, "Error: invalid types for '<'\n");
+      exit(2);
+
+    case LE:
+      if (useFloat) return Builder.CreateFCmpOLE(lhs, rhs, "cmptmp");
+      if (useIntLike) return Builder.CreateICmpSLE(lhs, rhs, "cmptmp");
+      fprintf(stderr, "Error: invalid types for '<='\n");
+      exit(2);
+
+    case GT:
+      if (useFloat) return Builder.CreateFCmpOGT(lhs, rhs, "cmptmp");
+      if (useIntLike) return Builder.CreateICmpSGT(lhs, rhs, "cmptmp");
+      fprintf(stderr, "Error: invalid types for '>'\n");
+      exit(2);
+
+    case GE:
+      if (useFloat) return Builder.CreateFCmpOGE(lhs, rhs, "cmptmp");
+      if (useIntLike) return Builder.CreateICmpSGE(lhs, rhs, "cmptmp");
+      fprintf(stderr, "Error: invalid types for '>='\n");
+      exit(2);
+
+    case EQ:
+      if (useFloat) return Builder.CreateFCmpOEQ(lhs, rhs, "cmptmp");
+      if (useIntLike) return Builder.CreateICmpEQ(lhs, rhs, "cmptmp");
+      fprintf(stderr, "Error: invalid types for '=='\n");
+      exit(2);
+
+    case NE:
+      if (useFloat) return Builder.CreateFCmpONE(lhs, rhs, "cmptmp");
+      if (useIntLike) return Builder.CreateICmpNE(lhs, rhs, "cmptmp");
+      fprintf(stderr, "Error: invalid types for '!='\n");
+      exit(2);
+
+    default:
+      fprintf(stderr, "Error: Unknown binary operator token %d\n", op);
+      exit(2);
+  }
+
+  // unreachable, but keeps compiler happy
+  return nullptr;
+}
+
+
+Value *GlobVarDeclAST::codegen() {
+  const std::string &name = getName();
+  llvm::Type *ty = typeFromString(getType());
+
+  // check for redeclaration
+  if (lookupGlobal(name) || GlobalNamedValues.count(name)) {
+    fprintf(stderr, "Redeclaration of global '%s'\n", name.c_str());
+    exit(2);
+  }
+
+  llvm::Constant *init = zeroOf(ty);
+
+  auto *G = new llvm::GlobalVariable(
+      *TheModule,
+      ty,
+      /*isConstant=*/false,
+      llvm::GlobalValue::ExternalLinkage,
+      init,
+      name);
+
+  GlobalNamedValues[name] = G;
+  return G;
+}
+
+
+
+Value* FunctionDeclAST::codegen() {
+    const std::string &function_name = Proto->getName();
+    Type* return_type = typeFromString(Proto->getType());
+
+    // Build parameter type list
+    std::vector<Type*> param_list;
+    for (auto &param : Proto->getParams()) {
+        param_list.push_back(typeFromString(param->getType()));
+    }
+
+    // Create function type
+    FunctionType* function_type =
+        FunctionType::get(return_type, param_list, /*isVarArg=*/false);
+
+    // Look up by name, not by type
+    Function* F = TheModule->getFunction(function_name);
+    if (F) {
+        fprintf(stderr, "Redefinition of function '%s'\n", function_name.c_str());
+        exit(2);
+    }
+
+    // Create the function in the module
+    F = Function::Create(function_type,
+                         Function::ExternalLinkage,
+                         function_name,
+                         TheModule.get());
+
+    // Name the arguments
+    unsigned idx = 0;
+    for (auto &arg : F->args()) {
+        arg.setName(Proto->getParams()[idx++]->getName());
+    }
+
+    // Create entry block and set insertion point
+    BasicBlock *BB = BasicBlock::Create(TheContext, "entry", F);
+    Builder.SetInsertPoint(BB);
+
+    // Reset symbol tables for this function
+    NamedValues.clear();
+    ScopeStack.clear();
+
+    // Create allocas in the entry block for each argument and store them
+    idx = 0;
+    for (auto &arg : F->args()) {
+        std::string argName = std::string(arg.getName());
+        Type *argType = arg.getType();
+
+        AllocaInst *slot = CreateEntryAlloca(F, argName, argType);
+        Builder.CreateStore(&arg, slot);
+        NamedValues[argName] = slot;
+    }
+
+    // Generate code for the body block
+    if (Block) {
+        Block->codegen();
+    }
+
+    // If body did not end with a return, insert default one
+    if (!BB->getTerminator()) {
+        if (return_type->isVoidTy()) {
+            Builder.CreateRetVoid();
+        } else {
+            Builder.CreateRet(zeroOf(return_type));
+        }
+    }
+
+    // Verify the function
+    if (verifyFunction(*F, &errs())) {
+        fprintf(stderr, "Function verification failed for '%s'\n",
+                function_name.c_str());
+        F->print(errs());
+        exit(2);
+    }
+
+    return F;
+}
+
+
+
 
 // Stream an AST node using its to_string()
 llvm::raw_ostream& operator<<(llvm::raw_ostream& os, const ASTnode& ast) {
