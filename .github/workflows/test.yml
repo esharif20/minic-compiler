@@ -38,6 +38,7 @@ jobs:
         export PATH=/usr/bin:$PATH
         export LD_LIBRARY_PATH=/usr/lib:$LD_LIBRARY_PATH
         ./tests/tests.sh -compile_only
+        ./tests/tests.sh
     
     - name: Show results
       if: always()
