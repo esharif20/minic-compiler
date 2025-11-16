@@ -9,37 +9,42 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-22.04
-    
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
-    
-    - name: Install LLVM 16 and Clang
-      run: |
-        wget https://apt.llvm.org/llvm.sh
-        chmod +x llvm.sh
-        sudo ./llvm.sh 16
-        sudo apt-get install -y llvm-16-dev clang-16
-        sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-16 100
-        sudo update-alternatives --install /usr/bin/llvm-config llvm-config /usr/bin/llvm-config-16 100
-    
-    - name: Create dummy module command
-      run: |
-        sudo tee /usr/local/bin/module > /dev/null << 'SCRIPT'
-        #!/bin/bash
-        echo "module: ignoring '$@' (CI environment)"
-        SCRIPT
-        sudo chmod +x /usr/local/bin/module
-    
-    - name: Run tests (compile only)
-      working-directory: ./code
-      run: |
-        export LLVM_INSTALL_PATH=/usr
-        export PATH=/usr/bin:$PATH
-        export LD_LIBRARY_PATH=/usr/lib:$LD_LIBRARY_PATH
-        ./tests/tests.sh -compile_only
-        ./tests/tests.sh
-    
-    - name: Show results
-      if: always()
-      run: echo "Tests completed!"
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install LLVM 16 and Clang
+        run: |
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 16
+          sudo apt-get install -y llvm-16-dev clang-16
+          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-16 100
+          sudo update-alternatives --install /usr/bin/llvm-config llvm-config /usr/bin/llvm-config-16 100
+
+      - name: Create dummy module command
+        run: |
+          sudo tee /usr/local/bin/module > /dev/null << 'SCRIPT'
+          #!/bin/bash
+          echo "module: ignoring '$@' (CI environment)"
+          SCRIPT
+          sudo chmod +x /usr/local/bin/module
+
+      - name: Provide DCS-style clang++ path for tests.sh
+        run: |
+          sudo mkdir -p /modules/cs325/llvm-21.1.0/bin
+          sudo ln -sf /usr/bin/clang++ /modules/cs325/llvm-21.1.0/bin/clang++
+
+      - name: Run tests (AST and IR)
+        working-directory: ./code
+        run: |
+          export LLVM_INSTALL_PATH=/usr
+          export PATH=/usr/bin:$PATH
+          export LD_LIBRARY_PATH=/usr/lib:$LD_LIBRARY_PATH
+          ./tests/tests.sh -compile_only
+          ./tests/tests.sh
+
+      - name: Show results
+        if: always()
+        run: echo "Tests completed!"
