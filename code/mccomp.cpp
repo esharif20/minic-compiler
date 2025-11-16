@@ -719,7 +719,7 @@ public:
   const std::string &getCallee() const { return Callee; }
   const std::vector<std::unique_ptr<ASTnode>>& getArgs() const { return Args; }
   
-  Value *codegen() override { return nullptr; }
+  Value *codegen() override;
   void dump(int indent = 0) const override;
   void to_string_inner(std::string& out, int indent) const override;
 };
@@ -2312,14 +2312,46 @@ Value* FunctionDeclAST::codegen() {
     return F;
 }
 
+Value* CallExprAST::codegen() {
+  // Look up the function in the module
+  Function* calleeF = TheModule->getFunction(Callee);
+  if (!calleeF) {
+    fprintf(stderr, "Unknown function '%s' in call\n", Callee.c_str());
+    exit(2);
+  }
 
+  // Check argument count
+  if (calleeF->arg_size() != Args.size()) {
+    fprintf(stderr, "Function '%s' expects %u args, got %zu\n",
+            Callee.c_str(),
+            static_cast<unsigned>(calleeF->arg_size()),
+            Args.size());
+    exit(2);
+  }
 
+  // Generate and cast each argument
+  std::vector<Value*> argValues;
+  argValues.reserve(Args.size());
 
-// Stream an AST node using its to_string()
-llvm::raw_ostream& operator<<(llvm::raw_ostream& os, const ASTnode& ast) {
-  os << ast.to_string();
-  return os;
+  unsigned idx = 0;
+  for (auto& argExpr : Args) {
+    Value* argVal = argExpr->codegen();
+    if (!argVal) return nullptr;
+
+    Type* paramTy = calleeF->getFunctionType()->getParamType(idx);
+    Value* castVal = castTo(paramTy, argVal, "callarg");
+    argValues.push_back(castVal);
+    ++idx;
+  }
+
+  // Emit the call instruction
+  return Builder.CreateCall(
+      calleeF,
+      argValues,
+      Callee == "main" ? "" : "calltmp"
+  );
 }
+
 
 
 
@@ -2328,9 +2360,16 @@ llvm::raw_ostream& operator<<(llvm::raw_ostream& os, const ASTnode& ast) {
 // AST Printer
 //===----------------------------------------------------------------------===//
 
+// Stream an AST node using its to_string()
+llvm::raw_ostream& operator<<(llvm::raw_ostream& os, const ASTnode& ast) {
+  os << ast.to_string();
+  return os;
+}
+
 // void IntASTnode::display(int tabs) {
 //   printf("%s\n",getType().c_str());
 // }
+
 
 // Literals & variables
 void IntASTnode::dump(int indent) const {
@@ -2538,7 +2577,9 @@ int main(int argc, char **argv) {
   }
 
   for (auto& d : gTopDecls) {
-    llvm::outs() << *d << "\n";   // uses to_string() -> to_string_inner(...)
+    if (d) {
+      llvm::outs() << *d << "\n";
+    }
   }
 
   // Make the module, which holds all the code.
