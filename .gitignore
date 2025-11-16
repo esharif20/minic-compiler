@@ -1,8 +1,6 @@
-cat > .gitignore << 'EOF'
-# Compiled files
+# Build artefacts in code/
 code/mccomp
 code/*.o
-code/*.ll
 code/output.ll
 
 # Editor files
@@ -14,8 +12,24 @@ code/output.ll
 # OS files
 .DS_Store
 Thumbs.db
-EOF
 
-# Ignore local learning files
+# Local learning files
 learn
 learn.cpp
+
+# Test executables
+code/tests/addition/add
+code/tests/cosine/cosine
+code/tests/factorial/fact
+code/tests/fibonacci/fib
+code/tests/leap/leap
+code/tests/palindrome/palindrome
+code/tests/pi/pi
+code/tests/recurse/recurse
+code/tests/rfact/rfact
+code/tests/unary/unary
+code/tests/void/void
+code/tests/while/while
+
+# Generated IR for null test
+code/tests/null/output.ll

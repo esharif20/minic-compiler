@@ -478,6 +478,11 @@ public:
   virtual ~ASTnode() {}
   virtual Value *codegen() { return nullptr; }
 
+  // Simple type tags so main can order codegen without RTTI
+  virtual bool isGlobVarDecl() const { return false; }
+  virtual bool isFunctionDecl() const { return false; }
+
+
   // Public forwarder so derived nodes can invoke a child's inner printer
   void to_string_into(std::string& out, int indent) const {
     to_string_inner(out, indent);
@@ -612,6 +617,9 @@ public:
       : Var(std::move(var)), Type(type) {}
   const std::string &getType() const { return Type; }
   const std::string &getName() const { return Var->getName(); }
+
+  bool isGlobVarDecl() const override { return true; }
+
   Value *codegen() override;
 };
 
@@ -766,6 +774,8 @@ public:
   FunctionDeclAST(std::unique_ptr<FunctionPrototypeAST> Proto,
                   std::unique_ptr<ASTnode> Block)
       : Proto(std::move(Proto)), Block(std::move(Block)) {}
+
+  bool isFunctionDecl() const override { return true; }
 
   // NEW getters:
   const FunctionPrototypeAST* getProto() const { return Proto.get(); }
@@ -1844,7 +1854,7 @@ static std::map<std::string, GlobalVariable*> GlobalNamedValues;
 // Canonical MiniC types
 static Type* miniCIntTy()   { return Type::getInt32Ty(TheContext); }
 static Type* miniCBoolTy()  { return Type::getInt1Ty(TheContext);  }
-static Type* miniCFloatTy() { return Type::getDoubleTy(TheContext); } // use double
+static Type* miniCFloatTy() { return Type::getFloatTy(TheContext); }  // MiniC float
 
 // Map parsed type strings to LLVM types
 static Type* typeFromString(const std::string& t) {
@@ -1856,10 +1866,58 @@ static Type* typeFromString(const std::string& t) {
   exit(2);
 }
 
+// Build an LLVM FunctionType from a MiniC prototype
+static FunctionType* functionTypeFromProto(const FunctionPrototypeAST* P) {
+  std::vector<Type*> paramTypes;
+  paramTypes.reserve(P->getSize());
+
+  for (const auto& param : P->getParams()) {
+    paramTypes.push_back(typeFromString(param->getType()));
+  }
+
+  Type* retTy = typeFromString(P->getType());
+  return FunctionType::get(retTy, paramTypes, /*isVarArg=*/false);
+}
+
+// Declare a function in the module from a prototype, or check a previous one
+static Function* declareFunctionFromProto(const FunctionPrototypeAST* P) {
+  const std::string& name = P->getName();
+  FunctionType* FT = functionTypeFromProto(P);
+
+  // Look for an existing function with this name
+  Function* F = TheModule->getFunction(name);
+
+  if (F) {
+    // Check the type matches the prototype
+    if (F->getFunctionType() != FT) {
+      fprintf(stderr,
+              "Conflicting declarations for function '%s'\n",
+              name.c_str());
+      exit(2);
+    }
+    return F;
+  }
+
+  // Create a fresh declaration
+  F = Function::Create(FT,
+                       Function::ExternalLinkage,
+                       name,
+                       TheModule.get());
+
+  // Give argument names from the prototype
+  unsigned idx = 0;
+  for (auto& arg : F->args()) {
+    arg.setName(P->getParams()[idx++]->getName());
+  }
+
+  return F;
+}
+
+
 // ---- low level type predicates ----
 static inline bool isInt(Type* T)   { return T->isIntegerTy(32); }
 static inline bool isBool(Type* T)  { return T->isIntegerTy(1);  }
-static inline bool isFloat(Type* T) { return T->isDoubleTy();    }
+static inline bool isFloat(Type* T) { return T->isFloatTy();     }
 
 // Thin wrappers used by expression codegen
 static inline bool isIntTy(Type* T)   { return isInt(T); }
@@ -2223,6 +2281,15 @@ Value *GlobVarDeclAST::codegen() {
     exit(2);
   }
 
+  // Disallow a global with the same name as a function
+  if (TheModule->getFunction(name)) {
+    fprintf(stderr,
+            "Global variable '%s' conflicts with a function of the same name\n",
+            name.c_str());
+    exit(2);
+  }
+
+
   llvm::Constant *init = zeroOf(ty);
 
   auto *G = new llvm::GlobalVariable(
@@ -2238,35 +2305,48 @@ Value *GlobVarDeclAST::codegen() {
 }
 
 
-
 Value* FunctionDeclAST::codegen() {
     const std::string &function_name = Proto->getName();
-    Type* return_type = typeFromString(Proto->getType());
 
-    // Build parameter type list
-    std::vector<Type*> param_list;
-    for (auto &param : Proto->getParams()) {
-        param_list.push_back(typeFromString(param->getType()));
-    }
-
-    // Create function type
-    FunctionType* function_type =
-        FunctionType::get(return_type, param_list, /*isVarArg=*/false);
-
-    // Look up by name, not by type
-    Function* F = TheModule->getFunction(function_name);
-    if (F) {
-        fprintf(stderr, "Redefinition of function '%s'\n", function_name.c_str());
+    // Disallow a function with the same name as a global variable
+    if (lookupGlobal(function_name)) {
+        fprintf(stderr,
+                "Function '%s' conflicts with a global variable of the same name\n",
+                function_name.c_str());
         exit(2);
     }
 
-    // Create the function in the module
-    F = Function::Create(function_type,
-                         Function::ExternalLinkage,
-                         function_name,
-                         TheModule.get());
 
-    // Name the arguments
+    // Build the expected LLVM type from the prototype
+    FunctionType* function_type = functionTypeFromProto(Proto.get());
+
+    // Look up any existing declaration or definition
+    Function* F = TheModule->getFunction(function_name);
+
+    if (F) {
+        // Type must match the prototype
+        if (F->getFunctionType() != function_type) {
+            fprintf(stderr,
+                    "Definition of function '%s' does not match a previous declaration\n",
+                    function_name.c_str());
+            exit(2);
+        }
+
+        // Do not allow more than one definition
+        if (!F->empty()) {
+            fprintf(stderr, "Redefinition of function '%s'\n",
+                    function_name.c_str());
+            exit(2);
+        }
+    } else {
+        // No previous declaration, create a new one
+        F = Function::Create(function_type,
+                             Function::ExternalLinkage,
+                             function_name,
+                             TheModule.get());
+    }
+
+    // Name the arguments to match the prototype
     unsigned idx = 0;
     for (auto &arg : F->args()) {
         arg.setName(Proto->getParams()[idx++]->getName());
@@ -2280,7 +2360,7 @@ Value* FunctionDeclAST::codegen() {
     NamedValues.clear();
     ScopeStack.clear();
 
-    // Create allocas in the entry block for each argument and store them
+    // Allocate each argument in the entry block and store the value
     idx = 0;
     for (auto &arg : F->args()) {
         std::string argName = std::string(arg.getName());
@@ -2296,8 +2376,9 @@ Value* FunctionDeclAST::codegen() {
         Block->codegen();
     }
 
-    // If body did not end with a return, insert default one
+    // If body did not end with a return, insert a default one
     if (!BB->getTerminator()) {
+        Type* return_type = function_type->getReturnType();
         if (return_type->isVoidTy()) {
             Builder.CreateRetVoid();
         } else {
@@ -2315,6 +2396,7 @@ Value* FunctionDeclAST::codegen() {
 
     return F;
 }
+
 
 Value* CallExprAST::codegen() {
   // Look up the function in the module
@@ -2710,6 +2792,31 @@ int main(int argc, char **argv) {
 
   // Make the module, which holds all the code.
   TheModule = std::make_unique<Module>("mini-c", TheContext);
+
+
+  // ================== Code generation phase ==================
+
+  // 1) Declare all extern functions in the module
+  for (auto &ex : gExterns) {
+    declareFunctionFromProto(ex.get());
+  }
+
+  // 2) First pass: generate all global variables
+  //
+  //    This ensures globals exist before any function that uses them.
+  for (auto &d : gTopDecls) {
+    if (d && d->isGlobVarDecl()) {
+      d->codegen();
+    }
+  }
+
+  // 3) Second pass: generate everything else (functions etc.)
+  for (auto &d : gTopDecls) {
+    if (d && !d->isGlobVarDecl()) {
+      d->codegen();
+    }
+  }
+
 
   // Run the parser now.
 
