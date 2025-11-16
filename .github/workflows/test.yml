@@ -14,14 +14,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Install LLVM 16 and Clang
+      - name: Install LLVM 21 and Clang
         run: |
           wget https://apt.llvm.org/llvm.sh
           chmod +x llvm.sh
-          sudo ./llvm.sh 16
-          sudo apt-get install -y llvm-16-dev clang-16
-          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-16 100
-          sudo update-alternatives --install /usr/bin/llvm-config llvm-config /usr/bin/llvm-config-16 100
+          # Install LLVM/Clang 21, to match the DCS module version
+          sudo ./llvm.sh 21
+          sudo apt-get install -y llvm-21-dev clang-21 lld-21 lldb-21
+          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-21 100
+          sudo update-alternatives --install /usr/bin/llvm-config llvm-config /usr/bin/llvm-config-21 100
 
       - name: Create dummy module command
         run: |
@@ -31,10 +32,11 @@ jobs:
           SCRIPT
           sudo chmod +x /usr/local/bin/module
 
-      - name: Provide DCS-style clang++ path for tests.sh
+      - name: Fake DCS /modules llvm path
         run: |
+          # Make the course path exist and point its clang++ at the system clang++-21
           sudo mkdir -p /modules/cs325/llvm-21.1.0/bin
-          sudo ln -sf /usr/bin/clang++ /modules/cs325/llvm-21.1.0/bin/clang++
+          sudo ln -sf /usr/bin/clang++-21 /modules/cs325/llvm-21.1.0/bin/clang++
 
       - name: Run tests (AST and IR)
         working-directory: ./code
@@ -42,7 +44,11 @@ jobs:
           export LLVM_INSTALL_PATH=/usr
           export PATH=/usr/bin:$PATH
           export LD_LIBRARY_PATH=/usr/lib:$LD_LIBRARY_PATH
+
+          # First run: compile-only sanity check
           ./tests/tests.sh -compile_only
+
+          # Second run: full tests including IR comparison and IR execution
           ./tests/tests.sh
 
       - name: Show results
