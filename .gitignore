@@ -17,6 +17,9 @@ Thumbs.db
 learn
 learn.cpp
 
+mccomp_backup
+mccomp_backup.cpp
+
 # Test executables
 code/tests/addition/add
 code/tests/cosine/cosine
