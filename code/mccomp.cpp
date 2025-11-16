@@ -830,6 +830,7 @@ public:
       : Cond(std::move(Cond)), Then(std::move(Then)), Else(std::move(Else)) {}
   void dump(int indent = 0) const override;
   void to_string_inner(std::string& out, int indent) const override;
+  Value *codegen() override;
 };
 
 /// WhileExprAST - Expression class for while.
@@ -841,6 +842,7 @@ public:
       : Cond(std::move(cond)), Body(std::move(body)) {}
   void dump(int indent = 0) const override;
   void to_string_inner(std::string& out, int indent) const override;
+  Value *codegen() override;
 };
 
 /// ReturnAST - Class for a return value
@@ -851,7 +853,9 @@ public:
   ReturnAST(std::unique_ptr<ASTnode> value) : Val(std::move(value)) {}
   void dump(int indent = 0) const override;
   void to_string_inner(std::string& out, int indent) const override;
+  Value *codegen() override;
 };
+
 
 /// ArgsAST - Class for a function argumetn in a function call
 class ArgsAST : public ASTnode {
@@ -2352,7 +2356,129 @@ Value* CallExprAST::codegen() {
   );
 }
 
+Value* IfExprAST::codegen() {
+    Value* condV = Cond->codegen();
+    if (!condV) return nullptr;
+    condV = castTo(miniCBoolTy(), condV, "ifcond");
 
+    BasicBlock* curBB = Builder.GetInsertBlock();
+    if (!curBB) {
+        fprintf(stderr, "IfExprAST used with no insertion block\n");
+        exit(2);
+    }
+
+    Function* F = curBB->getParent();
+    if (!F) {
+        fprintf(stderr, "IfExprAST used outside of a function\n");
+        exit(2);
+    }
+
+    // Attach all blocks to the function when you create them
+    BasicBlock* thenBB  = BasicBlock::Create(TheContext, "if.then", F);
+    BasicBlock* elseBB  = Else ? BasicBlock::Create(TheContext, "if.else", F) : nullptr;
+    BasicBlock* mergeBB = BasicBlock::Create(TheContext, "if.end",  F);
+
+    if (Else)
+        Builder.CreateCondBr(condV, thenBB, elseBB);
+    else
+        Builder.CreateCondBr(condV, thenBB, mergeBB);
+
+    // Then block
+    Builder.SetInsertPoint(thenBB);
+    if (Then) Then->codegen();
+    if (!Builder.GetInsertBlock()->getTerminator())
+        Builder.CreateBr(mergeBB);
+
+    // Else block, if present
+    if (Else) {
+        Builder.SetInsertPoint(elseBB);
+        Else->codegen();
+        if (!Builder.GetInsertBlock()->getTerminator())
+            Builder.CreateBr(mergeBB);
+    }
+
+    // Merge block
+    Builder.SetInsertPoint(mergeBB);
+    return nullptr;
+}
+
+
+Value* WhileExprAST::codegen() {
+    BasicBlock* curBB = Builder.GetInsertBlock();
+    if (!curBB) {
+      fprintf(stderr, "WhileExprAST used with no insertion block\n");
+      exit(2);
+    }
+
+    Function* F = curBB->getParent();
+    if (!F) {
+      fprintf(stderr, "WhileExprAST used outside of a function\n");
+      exit(2);
+    }
+
+    // Attach all blocks to F when created
+    BasicBlock* condBB = BasicBlock::Create(TheContext, "while.cond", F);
+    BasicBlock* bodyBB = BasicBlock::Create(TheContext, "while.body", F);
+    BasicBlock* endBB  = BasicBlock::Create(TheContext, "while.end",  F);
+
+    // Jump from current block to cond block
+    Builder.CreateBr(condBB);
+
+    // Condition block
+    Builder.SetInsertPoint(condBB);
+    Value* condV = Cond->codegen();
+    if (!condV) return nullptr;
+    condV = castTo(miniCBoolTy(), condV, "whilecond");
+    Builder.CreateCondBr(condV, bodyBB, endBB);
+
+    // Body block
+    Builder.SetInsertPoint(bodyBB);
+    if (Body) Body->codegen();
+    if (!Builder.GetInsertBlock()->getTerminator())
+      Builder.CreateBr(condBB);
+
+    // End block
+    Builder.SetInsertPoint(endBB);
+
+    return nullptr;
+}
+
+
+
+Value* ReturnAST::codegen() {
+    // Get current basic block
+    BasicBlock* currBB = Builder.GetInsertBlock();
+    if (!currBB) {
+        fprintf(stderr, "ReturnAST used without any insertion block\n");
+        exit(2);
+    }
+
+    // Get current function
+    Function* F = currBB->getParent();
+    if (!F) {
+        fprintf(stderr, "ReturnAST used outside of a function\n");
+        exit(2);
+    }
+
+    Type* func_return_type = F->getReturnType();
+
+    // Case 1: "return;" (no expression)
+    if (!Val) {
+        if (!func_return_type->isVoidTy()) {
+            fprintf(stderr, "Non-void function missing return value\n");
+            exit(2);
+        }
+        return Builder.CreateRetVoid();
+    }
+
+    // Case 2: "return expr;"
+    Value* return_val = Val->codegen();
+    if (!return_val) return nullptr;
+
+    // Implicit cast, narrowing errors are handled inside castTo
+    Value* cast_val = castTo(func_return_type, return_val, "ret");
+    return Builder.CreateRet(cast_val);
+}
 
 
 
