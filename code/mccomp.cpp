@@ -1928,6 +1928,7 @@ static inline Type* getIntTy()   { return miniCIntTy(); }
 static inline Type* getBoolTy()  { return miniCBoolTy(); }
 static inline Type* getFloatTy() { return miniCFloatTy(); }
 
+// MINIC_RULE_BOOL_WIDEN_ARITH
 // Decide which type wins when mixing types
 // int + float  → float
 // bool + int   → int
@@ -1944,6 +1945,19 @@ static Type* getCommonType(Type* T1, Type* T2) {
 
   return getBoolTy();
 }
+
+
+// MINIC_RULE_WIDENING_HELPER
+static bool isWideningType(Type* from, Type* to) {
+  if (from == to) return true;
+
+  if (isBoolTy(from) && isIntTy(to))   return true; // bool -> int
+  if (isBoolTy(from) && isFloatTy(to)) return true; // bool -> float
+  if (isIntTy(from)  && isFloatTy(to)) return true; // int  -> float
+
+  return false; // everything else is narrowing
+}
+
 
 // Create a stack slot in a function's entry block
 static AllocaInst* CreateEntryAlloca(Function* F, StringRef VarName, Type* Ty) {
@@ -2051,10 +2065,12 @@ Value* BlockAST::codegen() {
     const std::string& name = d->getName();
     Type* ty = typeFromString(d->getType());
 
+    // MINIC_RULE_LOCAL_SHADOW
     if (lookupLocalCurrent(name)) {
       fprintf(stderr, "Redeclaration of local '%s'\n", name.c_str());
       exit(2);
     }
+
 
     AllocaInst* slot = CreateEntryAlloca(F, name, ty);
     Builder.CreateStore(zeroOf(ty), slot);
@@ -2135,25 +2151,60 @@ Value* AssignAST::codegen() {
     auto* lhsVar = getLHS();
     const std::string& name = lhsVar->getName();
 
+    // local variable target
     if (AllocaInst* local_var_memory = lookupLocal(name)) {
         Type* dstTy = local_var_memory->getAllocatedType();
-        Value* rhs = getRHS()->codegen();
-        Value* rhsC = castTo(dstTy, rhs, "assign");
-        Builder.CreateStore(rhsC, local_var_memory);
-        return rhsC;
+        Value* rhs  = getRHS()->codegen();
+        if (!rhs) return nullptr;
+
+        Type* srcTy = rhs->getType();
+
+        // MINIC_RULE_ASSIGN_WIDENING
+        if (srcTy != dstTy) {
+            if (!isWideningType(srcTy, dstTy)) {
+                fprintf(stderr, "Illegal narrowing assignment to '%s'\n",
+                        name.c_str());
+                errs() << "  target type: "; dstTy->print(errs());
+                errs() << "\n  value type:  "; srcTy->print(errs());
+                errs() << "\n";
+                exit(2);
+            }
+            rhs = castTo(dstTy, rhs, "assign");
+        }
+
+        Builder.CreateStore(rhs, local_var_memory);
+        return rhs;
     }
 
+    // global variable target
     if (GlobalVariable* g = lookupGlobal(name)) {
         Type* dstTy = g->getValueType();
-        Value* rhs = getRHS()->codegen();
-        Value* rhsC = castTo(dstTy, rhs, "assign");
-        Builder.CreateStore(rhsC, g);
-        return rhsC;
+        Value* rhs  = getRHS()->codegen();
+        if (!rhs) return nullptr;
+
+        Type* srcTy = rhs->getType();
+
+        // MINIC_RULE_ASSIGN_WIDENING
+        if (srcTy != dstTy) {
+            if (!isWideningType(srcTy, dstTy)) {
+                fprintf(stderr, "Illegal narrowing assignment to global '%s'\n",
+                        name.c_str());
+                errs() << "  target type: "; dstTy->print(errs());
+                errs() << "\n  value type:  "; srcTy->print(errs());
+                errs() << "\n";
+                exit(2);
+            }
+            rhs = castTo(dstTy, rhs, "assign");
+        }
+
+        Builder.CreateStore(rhs, g);
+        return rhs;
     }
 
     fprintf(stderr, "Assignment to unknown variable '%s'\n", name.c_str());
     exit(2);
 }
+
 
 
 Value* BinaryExprAST::codegen() {
@@ -2272,6 +2323,7 @@ Value* BinaryExprAST::codegen() {
 
 
 Value *GlobVarDeclAST::codegen() {
+  // MINIC_RULE_GLOBAL_ONCE
   const std::string &name = getName();
   llvm::Type *ty = typeFromString(getType());
 
@@ -2407,6 +2459,7 @@ Value* CallExprAST::codegen() {
   }
 
   // Check argument count
+  // MINIC_RULE_NO_VARARGS
   if (calleeF->arg_size() != Args.size()) {
     fprintf(stderr, "Function '%s' expects %u args, got %zu\n",
             Callee.c_str(),
@@ -2415,7 +2468,7 @@ Value* CallExprAST::codegen() {
     exit(2);
   }
 
-  // Generate and cast each argument
+  // Generate and type-check each argument
   std::vector<Value*> argValues;
   argValues.reserve(Args.size());
 
@@ -2425,23 +2478,40 @@ Value* CallExprAST::codegen() {
     if (!argVal) return nullptr;
 
     Type* paramTy = calleeF->getFunctionType()->getParamType(idx);
-    Value* castVal = castTo(paramTy, argVal, "callarg");
-    argValues.push_back(castVal);
+
+    // MINIC_RULE_CALL_WIDENING
+    Type* srcTy = argVal->getType();
+    if (srcTy != paramTy) {
+      if (!isWideningType(srcTy, paramTy)) {
+        fprintf(stderr, "Illegal narrowing in call to '%s' for argument %u\n",
+                Callee.c_str(), idx);
+        errs() << "  parameter type: "; paramTy->print(errs());
+        errs() << "\n  argument type:  "; srcTy->print(errs());
+        errs() << "\n";
+        exit(2);
+      }
+      argVal = castTo(paramTy, argVal, "callarg");
+    }
+
+    argValues.push_back(argVal);
     ++idx;
   }
 
-  // Emit the call instruction
-  return Builder.CreateCall(
-      calleeF,
-      argValues,
-      Callee == "main" ? "" : "calltmp"
-  );
+  // Emit the call
+  CallInst* callInst = Builder.CreateCall(calleeF, argValues,
+                                          calleeF->getReturnType()->isVoidTy()
+                                            ? ""
+                                            : "calltmp");
+
+  // For void functions, you still return the CallInst as the Value*
+  return callInst;
 }
+
 
 Value* IfExprAST::codegen() {
     Value* condV = Cond->codegen();
     if (!condV) return nullptr;
-    condV = castTo(miniCBoolTy(), condV, "ifcond");
+    condV = castTo(miniCBoolTy(), condV, "ifcond"); // MINIC_RULE_COND_BOOL_CAST
 
     BasicBlock* curBB = Builder.GetInsertBlock();
     if (!curBB) {
@@ -2510,7 +2580,8 @@ Value* WhileExprAST::codegen() {
     Builder.SetInsertPoint(condBB);
     Value* condV = Cond->codegen();
     if (!condV) return nullptr;
-    condV = castTo(miniCBoolTy(), condV, "whilecond");
+    condV = castTo(miniCBoolTy(), condV, "whilecond"); // MINIC_RULE_COND_BOOL_CAST
+
     Builder.CreateCondBr(condV, bodyBB, endBB);
 
     // Body block
@@ -2528,14 +2599,12 @@ Value* WhileExprAST::codegen() {
 
 
 Value* ReturnAST::codegen() {
-    // Get current basic block
     BasicBlock* currBB = Builder.GetInsertBlock();
     if (!currBB) {
         fprintf(stderr, "ReturnAST used without any insertion block\n");
         exit(2);
     }
 
-    // Get current function
     Function* F = currBB->getParent();
     if (!F) {
         fprintf(stderr, "ReturnAST used outside of a function\n");
@@ -2544,7 +2613,7 @@ Value* ReturnAST::codegen() {
 
     Type* func_return_type = F->getReturnType();
 
-    // Case 1: "return;" (no expression)
+    // "return;" with no value
     if (!Val) {
         if (!func_return_type->isVoidTy()) {
             fprintf(stderr, "Non-void function missing return value\n");
@@ -2553,14 +2622,27 @@ Value* ReturnAST::codegen() {
         return Builder.CreateRetVoid();
     }
 
-    // Case 2: "return expr;"
+    // "return expr;"
     Value* return_val = Val->codegen();
     if (!return_val) return nullptr;
 
-    // Implicit cast, narrowing errors are handled inside castTo
-    Value* cast_val = castTo(func_return_type, return_val, "ret");
-    return Builder.CreateRet(cast_val);
+    Type* srcTy = return_val->getType();
+
+    // MINIC_RULE_RETURN_WIDENING
+    if (srcTy != func_return_type) {
+        if (!isWideningType(srcTy, func_return_type)) {
+            fprintf(stderr, "Illegal narrowing return type\n");
+            errs() << "  function return type: "; func_return_type->print(errs());
+            errs() << "\n  expression type:      "; srcTy->print(errs());
+            errs() << "\n";
+            exit(2);
+        }
+        return_val = castTo(func_return_type, return_val, "ret");
+    }
+
+    return Builder.CreateRet(return_val);
 }
+
 
 
 
@@ -2801,16 +2883,22 @@ int main(int argc, char **argv) {
     declareFunctionFromProto(ex.get());
   }
 
-  // 2) First pass: generate all global variables
-  //
-  //    This ensures globals exist before any function that uses them.
+  // 2) Forward declare all non-extern functions (prototypes first)
+  for (auto &d : gTopDecls) {
+    if (d && d->isFunctionDecl()) {
+      auto *FDecl = static_cast<FunctionDeclAST *>(d.get());
+      declareFunctionFromProto(FDecl->getProto());
+    }
+  }
+
+  // 3) First pass: generate all global variables
   for (auto &d : gTopDecls) {
     if (d && d->isGlobVarDecl()) {
       d->codegen();
     }
   }
 
-  // 3) Second pass: generate everything else (functions etc.)
+  // 4) Second pass: generate everything else (functions etc.)
   for (auto &d : gTopDecls) {
     if (d && !d->isGlobVarDecl()) {
       d->codegen();
