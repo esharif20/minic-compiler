@@ -2,6 +2,7 @@
 code/mccomp
 code/*.o
 code/output.ll
+code/tests/*/output.ll
 
 # Editor files
 *.swp
@@ -12,13 +13,6 @@ code/output.ll
 # OS files
 .DS_Store
 Thumbs.db
-
-# Local learning files
-learn
-learn.cpp
-
-mccomp_backup
-mccomp_backup.cpp
 
 # Test executables
 code/tests/addition/add
@@ -34,5 +28,4 @@ code/tests/unary/unary
 code/tests/void/void
 code/tests/while/while
 
-# Generated IR for null test
-code/tests/null/output.ll
+code/tests/*/output.ll

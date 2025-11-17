@@ -106,6 +106,23 @@ Test a specific program:
 ./mccomp tests/fibonacci/fibonacci.c
 ```
 
+### Running Extra Tests
+
+Test Semantics:
+
+```bash
+cd code
+./tests/run_semantic_tests.sh
+```
+
+Test extra test files:
+
+```bash
+cd code
+./tests/run_extra_tests.sh
+```
+
+
 ## MiniC Language Features
 
 The MiniC language supports:
