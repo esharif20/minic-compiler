@@ -1,7 +1,6 @@
 # CS325 — TASK 1.2.1
 # FINAL LL(k) GRAMMAR WITH ARRAYS + FIRST & FOLLOW SETS (ε = epsilon)
-# Uses the SAME nonterminal names as Figure 1 (incl. `rval`), with layered sub-NONTERMINALS for precedence.
-# Extended to support 1D, 2D, 3D arrays (int and float) in declarations and element access.
+# Grammar aligned with current mccomp.cpp implementation
 
 ======================================================
 PART A — GRAMMAR (left recursion removed; LL(k); precedence enforced)
@@ -70,11 +69,15 @@ stmt_list ::= stmt stmt_list'
 stmt_list' ::= stmt stmt_list'
              | ε
 
-stmt ::= expr_stmt
+stmt ::= array_assign_stmt
+       | expr_stmt
        | block
        | if_stmt
        | while_stmt
        | return_stmt
+
+# array assignment statements (1D, 2D, 3D access)
+array_assign_stmt ::= IDENT array_access_suffix "=" expr ";"
 
 expr_stmt ::= expr ";"
             | ";"
@@ -131,15 +134,20 @@ unary      ::= "-" unary
              | primary
 
 primary    ::= "(" expr ")"
-             | IDENT primary_tail
+             | IDENT primary_suffix
              | INT_LIT
              | FLOAT_LIT
              | BOOL_LIT
 
-# function calls and array accesses at the same precedence
-primary_tail ::= "(" args ")" primary_tail
-               | "[" expr "]" primary_tail
-               | ε
+# function calls and array accesses at same precedence
+primary_suffix ::= "(" args ")"              # function call on IDENT
+                 | array_access_suffix       # IDENT followed by indices
+                 | ε
+
+# array element access: 1D, 2D, or 3D
+array_access_suffix ::= "[" expr "]"
+                      | "[" expr "]" "[" expr "]"
+                      | "[" expr "]" "[" expr "]" "[" expr "]"
 
 args ::= arg_list
        | ε
@@ -185,6 +193,9 @@ FIRST(array_suffix)   = { "[" }
 FIRST(stmt_list)      = { "{", "if", "while", "return", IDENT, "-", "!", "(", INT_LIT, FLOAT_LIT, BOOL_LIT, ";", ε }
 FIRST(stmt_list')     = { "{", "if", "while", "return", IDENT, "-", "!", "(", INT_LIT, FLOAT_LIT, BOOL_LIT, ";", ε }
 FIRST(stmt)           = { "{", "if", "while", "return", IDENT, "-", "!", "(", INT_LIT, FLOAT_LIT, BOOL_LIT, ";" }
+
+FIRST(array_assign_stmt) = { IDENT }
+
 FIRST(expr_stmt)      = { IDENT, "-", "!", "(", INT_LIT, FLOAT_LIT, BOOL_LIT, ";" }
 FIRST(while_stmt)     = { "while" }
 FIRST(if_stmt)        = { "if" }
@@ -214,7 +225,8 @@ FIRST(mul_tail)       = { "*", "/", "%", ε }
 
 FIRST(unary)          = { "-", "!", "(", IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT }
 FIRST(primary)        = { "(", IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT }
-FIRST(primary_tail)   = { "(", "[", ε }
+FIRST(primary_suffix) = { "(", "[", ε }
+FIRST(array_access_suffix) = { "[" }
 
 FIRST(args)           = { IDENT, "-", "!", "(", INT_LIT, FLOAT_LIT, BOOL_LIT, ε }
 FIRST(arg_list)       = { IDENT, "-", "!", "(", INT_LIT, FLOAT_LIT, BOOL_LIT }
@@ -281,7 +293,7 @@ FOLLOW(unary)         = FOLLOW(mul_expr)
 FOLLOW(primary)       = FOLLOW(unary)
 
 # Call / array postfix after IDENT:
-FOLLOW(primary_tail)  = { "*", "/", "%", "+", "-", "<", "<=", ">", ">=", "==", "!=", "&&", "||", ")", ";", ",", "}" }
+FOLLOW(primary_suffix)  = { "*", "/", "%", "+", "-", "<", "<=", ">", ">=", "==", "!=", "&&", "||", ")", ";", ",", "}" }
 
 FOLLOW(var_decl)      = FOLLOW(decl_list)
 FOLLOW(local_decl)    = FOLLOW(local_decls)
@@ -289,22 +301,20 @@ FOLLOW(param)         = { ")", "," }
 
 
 ======================================================
-PART D — QUICK LL(k) CHECK AND DESIGN EXPLANATION
+PART D — LL(k) DESIGN NOTES AND LINK TO CODE
 ======================================================
-
-In this section I explain in first person what I changed and why the result remains LL(k) and matches the array task.
 
 1. Arrays only for int and float
 
-I keep scalar types as:
+Scalar types stay as
 
     var_type ::= "int" | "float" | "bool"
 
-Then I introduce:
+Array element types use
 
     arr_type ::= "int" | "float"
 
-and use `arr_type` only for array declarations:
+and only arr_type appears with array_suffix. So declarations follow
 
     var_decl   ::= var_type IDENT ";"
                  | arr_type IDENT array_suffix ";"
@@ -315,94 +325,113 @@ and use `arr_type` only for array declarations:
     param      ::= var_type IDENT
                  | arr_type IDENT array_suffix
 
-This way I still allow `bool x;` as a scalar, but I disallow `bool a[5];` at grammar level because `arr_type` does not include `"bool"`. That matches the requirement that arrays are only for `int` and `float`.
+This matches ParseDecl, ParseLocalDecl and ParseParam. BOOL_TOK never reaches ParseArrayDimsDecl, so bool arrays do not appear.
 
 2. Fixed 1D, 2D, 3D arrays with explicit sizes
 
-To enforce that every dimension has a size and that I only support 1D, 2D, and 3D, I define:
+Declaration suffix
 
     array_suffix ::= "[" INT_LIT "]"
                    | "[" INT_LIT "]" "[" INT_LIT "]"
                    | "[" INT_LIT "]" "[" INT_LIT "]" "[" INT_LIT "]"
 
-So a declaration like:
+matches ParseArrayDimsDecl, which reads one to three "[" INT_LIT "]" groups and enforces a minimum of one dimension and a maximum of three. Declarations such as
 
-    int arr[5];
-    int arr2D[4][4];
-    float arr3D[3][3][4];
+    int a[5];
+    int m[4][4];
+    float t[3][3][4];
 
-matches the productions, and patterns like `int a[];` or `int a[2][2][2][2];` do not appear in the language.
+parse, while forms without sizes or with four dimensions fail in the parser.
 
 3. Array access at the same precedence level as function calls
 
-The task asks for array element access at the same precedence level as function calls. I already have:
+Expressions use
 
     primary ::= "(" expr ")"
-              | IDENT primary_tail
+              | IDENT primary_suffix
               | INT_LIT
               | FLOAT_LIT
               | BOOL_LIT
 
-and I extend `primary_tail` to hold both function calls and array accesses:
+    primary_suffix ::= "(" args ")"
+                     | array_access_suffix
+                     | ε
 
-    primary_tail ::= "(" args ")" primary_tail
-                   | "[" expr "]" primary_tail
-                   | ε
+    array_access_suffix ::= "[" expr "]"
+                          | "[" expr "]" "[" expr "]"
+                          | "[" expr "]" "[" expr "]" "[" expr "]"
 
-So once the parser has seen an `IDENT`, it decides among:
+So after IDENT the parser chooses between a call or an array access based on one token of lookahead
 
-- `"("` for a function call,
-- `"["` for an array access,
-- or a token in FOLLOW(primary_tail) to end the postfix chain.
+- "(" for a function call
+- "[" for array element access
+- a token from FOLLOW(primary_suffix) to end the postfix
 
-Because `primary_tail` recurs on itself I support sequences such as:
+This matches ParsePrimary, which on IDENT checks CurTok.type for LPAR or LBOX and builds either CallExprAST or ArrayAccessAST. ParseArrayIndices bounds the number of indices to three, which matches array_access_suffix.
 
-- `arr[i][j]`
-- `foo(a[2])`
+4. Array assignment statements
 
-and function calls and array accesses share the same precedence position.
+Array assignments have their own statement form
 
-4. LL(k) decisions and FIRST/FOLLOW consistency
+    array_assign_stmt ::= IDENT array_access_suffix "=" expr ";"
 
-The main LL(2) decision in the original grammar remains:
+and stmt has array_assign_stmt as first alternative. This matches ParseStmt logic
+
+- on IDENT followed by "[" the parser scans all index groups
+- looks ahead one token beyond the last "]"
+- if this token is "=" it calls ParseArrayAssignStmt
+- ParseArrayAssignStmt parses IDENT + indices as an ArrayAccessAST, then an "=" expr ";", and builds ArrayAssignAST
+
+Expressions do not contain array assignments. So the grammar and code agree on placement of assignment for arrays.
+
+5. Expression precedence and IDENT "=" expr vs rval
+
+Expression parsing uses
 
     expr ::= IDENT "=" expr
            | rval
 
-When I see `IDENT` at the start of `expr`, I use one token of lookahead:
+with the standard LL(2) decision. ParseExper matches this
 
-- `"="` means the assignment alternative,
-- anything else means I treat the `IDENT` as part of `rval` (through `primary`, `or_expr`, and so on).
+- if the current token is IDENT it peeks one token ahead
+- if that token is ASSIGN it parses IDENT "=" expr and returns AssignAST
+- otherwise it pushes the peeked token back, restores CurTok to the IDENT, and parses rval
 
-For declarations, I now distinguish scalar and array forms after reading the type and identifier. For example:
+Every other expression level (or_expr, and_expr, eq_expr, rel_expr, add_expr, mul_expr, unary, primary) matches the usual precedence ladder and aligns with ParseOrExpr down to ParsePrimary.
 
-    var_decl ::= var_type IDENT ";"
-               | arr_type IDENT array_suffix ";"
+6. FIRST/FOLLOW and LL(k) checks around primary_suffix
 
-After `"int" IDENT`, I look ahead:
+primary_suffix has
 
-- `";"` means `int x;` (scalar),
-- `"["` means `int a[5];` (array with `array_suffix`).
+    FIRST(primary_suffix) = { "(", "[", ε }
 
-This still uses bounded lookahead, so the grammar remains LL(k) for a small fixed k that matches the coursework allowance.
+and the FOLLOW set includes all binary operators and closing tokens
 
-For `primary_tail`, the decision is LL(1) because:
+    FOLLOW(primary_suffix)  =
+        { "*", "/", "%", "+", "-", "<", "<=", ">", ">=",
+          "==", "!=", "&&", "||", ")", ";", ",", "}" }
 
-- FIRST(primary_tail) = { "(", "[", ε }
-- FOLLOW(primary_tail) = { "*", "/", "%", "+", "-", "<", "<=", ">", ">=", "==", "!=", "&&", "||", ")", ";", ",", "}" }
+FIRST(primary_suffix) and FOLLOW(primary_suffix) are disjoint, so the parser has an LL(1) decision at this position
 
-The operator tokens and closing tokens only appear in FOLLOW, not in FIRST, so if the next token is:
+- "(" → call
+- "[" → array_access_suffix
+- any symbol in FOLLOW(primary_suffix) → ε
 
-- `"("` I parse a function call tail,
-- `"["` I parse an array access tail,
-- anything in FOLLOW(primary_tail) I choose ε.
+This reflects ParsePrimary, which uses CurTok to decide between call, array access, or plain variable reference.
 
-5. Link to later tasks (parser, AST, zero initialisation)
+7. Link to code structure
 
-This grammar lines up with the next task where I extend the recursive descent parser and AST:
+This grammar matches key points in mccomp.cpp
 
-- The lexer gains tokens `[` and `]`.
-- In parsing, `var_decl`, `local_decl`, and `param` need to call a helper for `array_suffix` when they see `[` after an identifier.
-- In expressions, `parsePrimary` or `parsePrimaryTail` needs to recognise `[` after an `IDENT` and build an array access AST node.
-- I plan to create AST nodes such as `ArrayDecl` (with element type, name, and dimension sizes) and `ArrayAccess` (with a base expression and index expressions).
-- The assumption that arrays are initialised to `0` or `0.0` belongs to semantic analysis or code generation, not the grammar, so I enforce it there by emitting the right LLVM IR initialisation.
+- Lexer: tokens IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT, all keyword tokens, all operators, and LBOX/RBOX match the terminal set
+- Declarations and arrays
+  - ParseDecl parses global scalars as GlobVarDeclAST
+  - global arrays as ArrayDeclAST with dimensions from ParseArrayDimsDecl
+  - functions as FunctionDeclAST with FunctionPrototypeAST holding ParamAST entries
+- Local arrays: ParseLocalDecl builds VarDeclAST for scalars and ArrayDeclAST for int and float arrays
+- Parameters: ParseParam attaches dimensions only for INT_TOK and FLOAT_TOK and passes them to ParamAST
+- Array access in expressions: ParsePrimary plus ParseArrayIndices build ArrayAccessAST
+- Array assignment: ParseArrayAssignStmt builds ArrayAssignAST matching array_assign_stmt
+- Function calls: CallExprAST matches the call branch in primary_suffix
+
+The LL(k) decisions in the document match the points in code that use extra lookahead (IDENT "=" expr versus rval, and statement-level array assignment versus vanilla expr_stmt). The grammar now describes exactly the programs that this compiler accepts for MiniC with 1D, 2D and 3D arrays of int and float.
