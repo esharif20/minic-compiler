@@ -260,6 +260,17 @@ static TOKEN gettok() {
     columnNo++;
     return returnTok(")", RPAR);
   }
+  // NEW: square brackets
+  if (LastChar == '[') {
+    LastChar = getc(pFile);
+    columnNo++;
+    return returnTok("[", LBOX);
+  }
+  if (LastChar == ']') {
+    LastChar = getc(pFile);
+    columnNo++;
+    return returnTok("]", RBOX);
+  }
   if (LastChar == ';') {
     LastChar = getc(pFile);
     columnNo++;
@@ -607,6 +618,50 @@ public:
   const std::string &getName() const { return Var->getName(); }
 };
 
+class ArrayDeclAST : public VarDeclAST { 
+  std::vector<int> Dimensions;
+  
+public:
+  // Constructor
+  ArrayDeclAST(std::unique_ptr<VariableASTnode> var, 
+               const std::string& type, 
+               std::vector<int> dimensions_list)
+      : VarDeclAST(std::move(var), type), 
+        Dimensions(std::move(dimensions_list)) {}
+  
+  // Getter - return Dimensions
+  const std::vector<int>& getDims() const { 
+    return Dimensions; 
+  }
+  
+  // dump method
+  void dump(int indent = 0) const override {
+    indentOut(indent);
+    fprintf(stderr, "ArrayDecl %s : %s [", 
+            getName().c_str(), getType().c_str());
+    
+    for (size_t i = 0; i < Dimensions.size(); ++i) {
+      fprintf(stderr, "%d", Dimensions[i]);
+      if (i + 1 < Dimensions.size()) 
+        fprintf(stderr, "][");
+    }
+    fprintf(stderr, "]\n");
+  }
+  
+  // to_string_inner method
+  void to_string_inner(std::string &out, int indent) const override {
+    std::string line = "ArrayDecl " + getName() + " : " + getType() + " [";
+    
+    for (size_t i = 0; i < Dimensions.size(); ++i) {
+      line += std::to_string(Dimensions[i]);
+      if (i + 1 < Dimensions.size()) 
+        line += "][";
+    }
+    line += "]";
+    appendln(out, indent, line);
+  }
+};
+
 /// GlobVarDeclAST - Class for a Global variable declaration
 class GlobVarDeclAST : public DeclAST {
   std::unique_ptr<VariableASTnode> Var;
@@ -712,6 +767,56 @@ public:
   void to_string_inner(std::string& out, int indent) const override;
 };
 
+class ArrayAccessAST : public ASTnode {
+  std::string name;                                    
+  std::vector<std::unique_ptr<ASTnode>> indices;      
+  
+public:
+  // Constructor 
+  ArrayAccessAST(const std::string& name, 
+                 std::vector<std::unique_ptr<ASTnode>> indices_param)
+      : name(name), indices(std::move(indices_param)) {}
+  
+  // Getters 
+  const std::string &getName() const {
+    return name;
+  }
+  
+  const std::vector<std::unique_ptr<ASTnode>> &getIndices() const {
+    return indices;
+  }
+  
+  // codegen 
+  Value *codegen() override {
+    fprintf(stderr,
+            "ArrayAccessAST::codegen not implemented yet for '%s'\n",
+            name.c_str());  //: lowercase 'name'
+    exit(2);
+  }
+  
+  // dump 
+  void dump(int indent = 0) const override {
+    indentOut(indent);
+    fprintf(stderr, "ArrayAccess %s\n", name.c_str());  
+    
+    for (size_t i = 0; i < indices.size(); ++i) {        
+      indentOut(indent + 1);
+      fprintf(stderr, "index[%zu]:\n", i);
+      if (indices[i]) indices[i]->dump(indent + 2);      
+    }
+  }
+  
+  // to_string_inner 
+  void to_string_inner(std::string &out, int indent) const override {
+    appendln(out, indent, "ArrayAccess " + name);        
+    
+    for (size_t i = 0; i < indices.size(); ++i) {        
+      appendln(out, indent + 1,
+               "index[" + std::to_string(i) + "]:");
+      if (indices[i]) indices[i]->to_string_into(out, indent + 2);  
+    }
+  }
+};
 
 
 /// CallExprAST - Expression class for function calls
