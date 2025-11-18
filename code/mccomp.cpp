@@ -1192,6 +1192,31 @@ static void ParseArgs(std::vector<std::unique_ptr<ASTnode>>& out) {
   }
 }
 
+// NEW: parse one or more [expr] suffixes on an identifier in expressions
+// array_index_suffix ::= "[" expr "]" ( "[" expr "]" )*
+static std::vector<std::unique_ptr<ASTnode>> ParseArrayIndices() {
+  std::vector<std::unique_ptr<ASTnode>> indices;
+
+  // We are called when CurTok.type == LBOX
+  while (CurTok.type == LBOX) {
+    getNextToken(); // eat '['
+    auto idx = ParseExper();
+    if (!idx) LogError(CurTok, "expected expression inside array index");
+
+    if (CurTok.type != RBOX) {
+      LogError(CurTok, "expected ']' after array index expression");
+    }
+    getNextToken(); // eat ']'
+
+    indices.push_back(std::move(idx));
+
+    if (indices.size() == 3) break; // only 1D..3D allowed
+  }
+
+  return indices;
+}
+
+
 // -------- primary --------
 // primary ::= '(' expr ')' | IDENT | IDENT '(' args ')' | INT_LIT | FLOAT_LIT | BOOL_LIT
 static std::unique_ptr<ASTnode> ParsePrimary() {
@@ -1640,6 +1665,42 @@ static std::vector<std::unique_ptr<VarDeclAST>> ParseLocalDeclsPrime() {
 
   return local_decls_prime;
 }
+
+
+// NEW: parse 1–3 constant dimensions for a declaration
+// array_suffix ::= "[" INT_LIT "]"
+//                | "[" INT_LIT "]" "[" INT_LIT "]"
+//                | "[" INT_LIT "]" "[" INT_LIT "]" "[" INT_LIT "]"
+static std::vector<int> ParseArrayDimsDecl() {
+  std::vector<int> dims;
+
+  // We are called when CurTok.type is LBOX
+  while (CurTok.type == LBOX) {
+    getNextToken(); // eat '['
+
+    if (CurTok.type != INT_LIT) {
+      LogError(CurTok, "expected integer literal inside array dimension");
+    }
+    int size = CurTok.getIntVal();
+    dims.push_back(size);
+    getNextToken(); // eat INT_LIT
+
+    if (CurTok.type != RBOX) {
+      LogError(CurTok, "expected ']' after array dimension");
+    }
+    getNextToken(); // eat ']'
+
+    if (dims.size() == 3) break; // only 1D, 2D, 3D
+  }
+
+  if (dims.empty()) {
+    LogError(CurTok, "array declaration must have at least one dimension");
+  }
+
+  return dims;
+}
+
+
 
 // local_decl ::= var_type IDENT ";"
 // var_type ::= "int"
