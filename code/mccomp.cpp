@@ -591,13 +591,21 @@ public:
 class ParamAST {
   std::string Name;
   std::string Type;
+  std::vector<int> Dimensions;   // new
 
 public:
-  ParamAST(const std::string &name, const std::string &type)
-      : Name(name), Type(type) {}
+  ParamAST(const std::string &name,
+           const std::string &type,
+           std::vector<int> dims = {})
+      : Name(name), Type(type), Dimensions(std::move(dims)) {}
+
   const std::string &getName() const { return Name; }
   const std::string &getType() const { return Type; }
+  const std::vector<int> &getDims() const { return Dimensions; }
+
+  bool isArrayParam() const { return !Dimensions.empty(); }
 };
+
 
 /// DeclAST - Base class for declarations, variables and functions
 class DeclAST : public ASTnode {
@@ -606,35 +614,39 @@ public:
   virtual ~DeclAST() {}
 };
 
-/// VarDeclAST - Class for a variable declaration
 class VarDeclAST : public DeclAST {
   std::unique_ptr<VariableASTnode> Var;
-  std::string Type;
+  std::string TypeName;
 
-public:
-  VarDeclAST(std::unique_ptr<VariableASTnode> var, const std::string &type)
-      : Var(std::move(var)), Type(type) {}
-  const std::string &getType() const { return Type; }
-  const std::string &getName() const { return Var->getName(); }
+  public:
+    VarDeclAST(std::unique_ptr<VariableASTnode> var, const std::string &type)
+    : Var(std::move(var)), TypeName(type) {}
+    const std::string &getType() const { return TypeName; }
+    const std::string &getName() const { return Var->getName(); }
+
+    Value *codegen() override;
 };
 
+/// VarDeclAST - Class for a variable declaration
 class ArrayDeclAST : public VarDeclAST { 
   std::vector<int> Dimensions;
   
 public:
-  // Constructor
   ArrayDeclAST(std::unique_ptr<VariableASTnode> var, 
                const std::string& type, 
                std::vector<int> dimensions_list)
       : VarDeclAST(std::move(var), type), 
         Dimensions(std::move(dimensions_list)) {}
-  
-  // Getter - return Dimensions
+
   const std::vector<int>& getDims() const { 
     return Dimensions; 
   }
-  
-  // dump method
+
+  // treat as a global decl at top level
+  bool isGlobVarDecl() const override { return true; }
+
+  Value *codegen() override;   // codegen call 
+
   void dump(int indent = 0) const override {
     indentOut(indent);
     fprintf(stderr, "ArrayDecl %s : %s [", 
@@ -648,7 +660,6 @@ public:
     fprintf(stderr, "]\n");
   }
   
-  // to_string_inner method
   void to_string_inner(std::string &out, int indent) const override {
     std::string line = "ArrayDecl " + getName() + " : " + getType() + " [";
     
@@ -661,6 +672,7 @@ public:
     appendln(out, indent, line);
   }
 };
+
 
 /// GlobVarDeclAST - Class for a Global variable declaration
 class GlobVarDeclAST : public DeclAST {
@@ -787,12 +799,7 @@ public:
   }
   
   // codegen 
-  Value *codegen() override {
-    fprintf(stderr,
-            "ArrayAccessAST::codegen not implemented yet for '%s'\n",
-            name.c_str());  //: lowercase 'name'
-    exit(2);
-  }
+  Value *codegen() override;
   
   // dump 
   void dump(int indent = 0) const override {
@@ -815,6 +822,38 @@ public:
                "index[" + std::to_string(i) + "]:");
       if (indices[i]) indices[i]->to_string_into(out, indent + 2);  
     }
+  }
+};
+
+
+class ArrayAssignAST : public ASTnode {
+  std::unique_ptr<ArrayAccessAST> LHS;
+  std::unique_ptr<ASTnode>        RHS;
+
+public:
+  ArrayAssignAST(std::unique_ptr<ArrayAccessAST> lhs,
+                 std::unique_ptr<ASTnode> rhs)
+      : LHS(std::move(lhs)), RHS(std::move(rhs)) {}
+
+  ArrayAccessAST* getLHS() const { return LHS.get(); }
+  ASTnode*        getRHS() const { return RHS.get(); }
+
+  Value *codegen() override;
+
+  void dump(int indent = 0) const override {
+    indentOut(indent); fprintf(stderr, "ArrayAssign\n");
+    indentOut(indent+1); fprintf(stderr, "LHS:\n");
+    if (LHS) LHS->dump(indent+2);
+    indentOut(indent+1); fprintf(stderr, "RHS:\n");
+    if (RHS) RHS->dump(indent+2);
+  }
+
+  void to_string_inner(std::string &out, int indent) const override {
+    appendln(out, indent, "ArrayAssign");
+    appendln(out, indent + 1, "LHS:");
+    if (LHS) LHS->to_string_into(out, indent + 2);
+    appendln(out, indent + 1, "RHS:");
+    if (RHS) RHS->to_string_into(out, indent + 2);
   }
 };
 
@@ -1013,6 +1052,7 @@ static std::unique_ptr<ASTnode> ParseExper();
 static std::unique_ptr<ParamAST> ParseParam();
 static std::unique_ptr<VarDeclAST> ParseLocalDecl();
 static std::vector<std::unique_ptr<ASTnode>> ParseStmtListPrime();
+static std::vector<int> ParseArrayDimsDecl();
 
 // ---- Expressions (forward declarations) ----
 static std::unique_ptr<ASTnode> ParseRval();
@@ -1024,6 +1064,7 @@ static std::unique_ptr<ASTnode> ParseAddExpr();
 static std::unique_ptr<ASTnode> ParseMulExpr();
 static std::unique_ptr<ASTnode> ParseUnary();
 static std::unique_ptr<ASTnode> ParsePrimary();
+static std::unique_ptr<ASTnode> ParseArrayAssignStmt(); // new for arrays
 static void ParseArgs(std::vector<std::unique_ptr<ASTnode>>& out);
 
 
@@ -1085,19 +1126,39 @@ static std::vector<std::unique_ptr<ParamAST>> ParseParamListPrime() {
 
 // param ::= var_type IDENT
 static std::unique_ptr<ParamAST> ParseParam() {
-  std::string Type = CurTok.lexeme;  // Save the type (int/float/bool)
-  getNextToken();  // eat type token
-
-  if (CurTok.type == IDENT) {
-    std::string Name = CurTok.getIdentifierStr();  // Save parameter name
-    getNextToken();  // eat IDENT
-    
-    // FIX: Actually create and return the ParamAST
-    return std::make_unique<ParamAST>(Name, Type);
+  // Expect a type token first
+  if (CurTok.type != INT_TOK &&
+      CurTok.type != FLOAT_TOK &&
+      CurTok.type != BOOL_TOK) {
+    LogError(CurTok, "expected 'int', 'float' or 'bool' in parameter");
   }
 
-  return nullptr;  // Error case: no IDENT after type
+  TOKEN typeTok = CurTok;           // remember which type
+  std::string Type = CurTok.lexeme; // "int", "float", "bool"
+  getNextToken();                   // eat type
+
+  // Now expect the identifier
+  if (CurTok.type != IDENT) {
+    LogError(CurTok, "expected identifier in parameter declaration");
+  }
+  std::string Name = CurTok.getIdentifierStr();
+  getNextToken(); // eat IDENT
+
+  std::vector<int> dims;  // new
+
+  // Optional array suffix for int/float parameters:
+  //   int a[10]
+  //   int a[10][5]
+  if ((typeTok.type == INT_TOK || typeTok.type == FLOAT_TOK) &&
+      CurTok.type == LBOX) {
+    dims = ParseArrayDimsDecl();   // store the dimensions
+  }
+
+  return std::make_unique<ParamAST>(Name, Type, std::move(dims));
 }
+
+
+
 
 // param_list ::= param param_list_prime
 static std::vector<std::unique_ptr<ParamAST>> ParseParamList() {
@@ -1239,13 +1300,25 @@ static std::unique_ptr<ASTnode> ParsePrimary() {
         getNextToken(); // eat '('
         std::vector<std::unique_ptr<ASTnode>> args;
         ParseArgs(args);
-        if (CurTok.type != RPAR) return LogError(CurTok, "expected ')' after arguments");
+        if (CurTok.type != RPAR)
+          return LogError(CurTok, "expected ')' after arguments");
         getNextToken(); // eat ')'
         return std::make_unique<CallExprAST>(name, std::move(args));
       }
+
+      // NEW: array element access at same precedence as a call
+      if (CurTok.type == LBOX) {
+        auto indices = ParseArrayIndices();
+        if (indices.empty()) {
+          return LogError(CurTok, "array access needs at least one index");
+        }
+        return std::make_unique<ArrayAccessAST>(name, std::move(indices));
+      }
+
       // variable reference
       return std::make_unique<VariableASTnode>(identTok, name);
     }
+
     case INT_LIT:
       return ParseIntNumberExpr();
     case FLOAT_LIT:
@@ -1548,48 +1621,127 @@ static std::unique_ptr<ASTnode> ParseWhileStmt() {
 //      |  return_stmt
 static std::unique_ptr<ASTnode> ParseStmt() {
 
+  // Special-case only IDENT "[" ... "]" "=" ... as an array assignment
+  if (CurTok.type == IDENT) {
+    TOKEN identTok = CurTok;
+    TOKEN firstAfterIdent = getNextToken();  // peek after IDENT
+
+    if (firstAfterIdent.type == LBOX) {
+      // We have IDENT "[" ...  so scan ALL [expr] groups (1D, 2D, 3D)
+      std::vector<TOKEN> lookahead;
+      lookahead.push_back(firstAfterIdent);  // first '[' already seen
+
+      int dimsSeen = 0;
+      TOKEN afterTok;        // first non-'[' token after all index groups
+      bool done = false;
+
+      while (!done) {
+        // Scan one [ ... ] block (may contain nested brackets in the index expr)
+        int depth = 1;
+        while (depth > 0) {
+          TOKEN t = getNextToken();
+          lookahead.push_back(t);
+
+          if (t.type == LBOX)      depth++;
+          else if (t.type == RBOX) depth--;
+
+          if (t.type == EOF_TOK) {
+            LogError(t, "unterminated '[' in array reference");
+          }
+        }
+
+        dimsSeen++;
+        if (dimsSeen > 3) {
+          LogError(firstAfterIdent,
+                   "only 1D, 2D and 3D array indexing is supported");
+        }
+
+        // Look at what comes immediately after this dimension
+        TOKEN t2 = getNextToken();
+        if (t2.type == LBOX) {
+          // Another "[", so another dimension follows
+          lookahead.push_back(t2);
+          continue;
+        } else {
+          // First non-'[' token after all [..] groups
+          afterTok = t2;
+          lookahead.push_back(afterTok);
+          done = true;
+        }
+      }
+
+      bool isArrayAssign = (afterTok.type == ASSIGN);
+
+      // Restore all lookahead tokens back into the buffer in reverse order
+      for (int i = (int)lookahead.size() - 1; i >= 0; --i) {
+        putBackToken(lookahead[i]);
+      }
+
+      // Restore current token to the IDENT at the start of the statement
+      CurTok = identTok;
+
+      if (isArrayAssign) {
+        auto arr_assign = ParseArrayAssignStmt();
+        if (arr_assign) {
+          fprintf(stderr, "Parsed an array assignment statement\n");
+          return arr_assign;
+        }
+        // If ParseArrayAssignStmt failed, it will already have reported an error
+      }
+      // If not followed by '=', fall through and treat as a normal expr_stmt
+
+    } else {
+      // No '[' after IDENT, put token back and fall through to normal parsing
+      putBackToken(firstAfterIdent);
+      CurTok = identTok;
+    }
+  }
+
+  // Normal statement kinds
   if (CurTok.type == NOT || CurTok.type == MINUS || CurTok.type == PLUS ||
       CurTok.type == LPAR || CurTok.type == IDENT || CurTok.type == BOOL_LIT ||
       CurTok.type == INT_LIT || CurTok.type == FLOAT_LIT ||
       CurTok.type == SC) { // FIRST(expr_stmt)
-    // expand by stmt ::= expr_stmt
     auto expr_stmt = ParseExperStmt();
     fprintf(stderr, "Parsed an expression statement\n");
     return expr_stmt;
-  } else if (CurTok.type == LBRA) { // FIRST(block)
+
+  } else if (CurTok.type == LBRA) { // block
     auto block_stmt = ParseBlock();
     if (block_stmt) {
       fprintf(stderr, "Parsed a block\n");
       return block_stmt;
     }
-  } else if (CurTok.type == IF) { // FIRST(if_stmt)
+
+  } else if (CurTok.type == IF) { // if_stmt
     auto if_stmt = ParseIfStmt();
     if (if_stmt) {
       fprintf(stderr, "Parsed an if statment\n");
       return if_stmt;
     }
-  } else if (CurTok.type == WHILE) { // FIRST(while_stmt)
+
+  } else if (CurTok.type == WHILE) { // while_stmt
     auto while_stmt = ParseWhileStmt();
     if (while_stmt) {
       fprintf(stderr, "Parsed a while statment\n");
       return while_stmt;
     }
-  } else if (CurTok.type == RETURN) { // FIRST(return_stmt)
+
+  } else if (CurTok.type == RETURN) { // return_stmt
     auto return_stmt = ParseReturnStmt();
     if (return_stmt) {
       fprintf(stderr, "Parsed a return statment\n");
       return return_stmt;
     }
-  }
-  // else if(CurTok.type == RBRA) { // FOLLOW(stmt_list_prime)
-  //  expand by stmt_list_prime ::= ε
-  //  do nothing
-  //}
-  else { // syntax error
+
+  } else {
+    // syntax error
     return LogError(CurTok, "expected BLA BLA\n");
   }
+
   return nullptr;
 }
+
 
 // stmt_list ::= stmt stmt_list_prime
 static std::vector<std::unique_ptr<ASTnode>> ParseStmtList() {
@@ -1700,12 +1852,41 @@ static std::vector<int> ParseArrayDimsDecl() {
   return dims;
 }
 
+static std::unique_ptr<ASTnode> ParseArrayAssignStmt() {
+  // We are at IDENT, and the next token is "[" (checked in ParseStmt)
+
+  // Use ParsePrimary to build an ArrayAccessAST from IDENT [expr]...
+  auto lhsExpr = ParsePrimary();
+  if (!lhsExpr) return nullptr;
+
+  // ParsePrimary with IDENT "[" ... gives an ArrayAccessAST,
+  // so this static_cast is safe here.
+  auto *lhsRaw = static_cast<ArrayAccessAST*>(lhsExpr.release());
+  std::unique_ptr<ArrayAccessAST> lhs(lhsRaw);
+
+  if (CurTok.type != ASSIGN) {
+    return LogError(CurTok, "expected '=' in array assignment");
+  }
+  getNextToken(); // eat '='
+
+  auto rhs = ParseExper();
+  if (!rhs) return nullptr;
+
+  if (CurTok.type != SC) {
+    return LogError(CurTok, "expected ';' to end array assignment");
+  }
+  getNextToken(); // eat ';'
+
+  return std::make_unique<ArrayAssignAST>(std::move(lhs), std::move(rhs));
+}
 
 
 // local_decl ::= var_type IDENT ";"
 // var_type ::= "int"
 //           |  "float"
 //           |  "bool"
+// local_decl ::= var_type IDENT ";"
+//              | var_type IDENT array_suffix ";"
 static std::unique_ptr<VarDeclAST> ParseLocalDecl() {
   TOKEN PrevTok;
   std::string Type;
@@ -1715,27 +1896,47 @@ static std::unique_ptr<VarDeclAST> ParseLocalDecl() {
   if (CurTok.type == INT_TOK || CurTok.type == FLOAT_TOK ||
       CurTok.type == BOOL_TOK) { // FIRST(var_type)
     PrevTok = CurTok;
-    getNextToken(); // eat 'int' or 'float or 'bool'
-    if (CurTok.type == IDENT) {
-      Type = PrevTok.lexeme;
-      Name = CurTok.getIdentifierStr(); // save the identifier name
-      auto ident = std::make_unique<VariableASTnode>(CurTok, Name);
-      local_decl = std::make_unique<VarDeclAST>(std::move(ident), Type);
+    getNextToken(); // eat 'int' or 'float' or 'bool'
 
-      getNextToken(); // eat 'IDENT'
+    if (CurTok.type != IDENT) {
+      LogError(CurTok, "expected identifier in local variable declaration");
+      return nullptr;
+    }
+
+    Type = PrevTok.lexeme;
+    Name = CurTok.getIdentifierStr();
+    auto ident = std::make_unique<VariableASTnode>(CurTok, Name);
+    getNextToken(); // eat IDENT
+
+    // NEW: check for array suffix
+    if ((PrevTok.type == INT_TOK || PrevTok.type == FLOAT_TOK) &&
+        CurTok.type == LBOX) {
+
+      auto dims = ParseArrayDimsDecl(); // one to three INT_LIT dims
+
+      if (CurTok.type != SC) {
+        LogError(CurTok, "expected ';' after array declaration");
+        return nullptr;
+      }
+      getNextToken(); // eat ';'
+
+      fprintf(stderr, "Parsed a local array declaration\n");
+      local_decl = std::make_unique<ArrayDeclAST>(std::move(ident), Type,
+                                                  std::move(dims));
+    } else {
+      // regular variable as before
       if (CurTok.type != SC) {
         LogError(CurTok, "Expected ';' to end local variable declaration");
         return nullptr;
       }
       getNextToken(); // eat ';'
       fprintf(stderr, "Parsed a local variable declaration\n");
-    } else {
-      LogError(CurTok, "expected identifier' in local variable declaration");
-      return nullptr;
+      local_decl = std::make_unique<VarDeclAST>(std::move(ident), Type);
     }
   }
   return local_decl;
 }
+
 
 // local_decls ::= local_decl local_decls_prime
 static std::vector<std::unique_ptr<VarDeclAST>> ParseLocalDecls() {
@@ -1795,76 +1996,108 @@ static std::unique_ptr<ASTnode> ParseBlock() {
 
 // decl ::= var_decl
 //       |  fun_decl
+//       |  array_decl     // new
 static std::unique_ptr<ASTnode> ParseDecl() {
   std::string IdName;
   std::vector<std::unique_ptr<ParamAST>> param_list;
 
-  TOKEN PrevTok = CurTok; // to keep track of the type token
+  // Remember the type token for later (int/float/bool/void)
+  TOKEN typeTok = CurTok;
 
   if (CurTok.type == VOID_TOK || CurTok.type == INT_TOK ||
       CurTok.type == FLOAT_TOK || CurTok.type == BOOL_TOK) {
-    getNextToken(); // eat the VOID_TOK, INT_TOK, BOOL_TOK or FLOAT_TOK
 
-    IdName = CurTok.getIdentifierStr(); // save the identifier name
+    // eat the type
+    getNextToken();
 
-    if (CurTok.type == IDENT) {
-      auto ident = std::make_unique<VariableASTnode>(CurTok, IdName);
-      getNextToken(); // eat the IDENT
-      if (CurTok.type ==
-          SC) {         // found ';' then this is a global variable declaration.
-        getNextToken(); // eat ;
-        fprintf(stderr, "Parsed a variable declaration\n");
+    // expect an identifier next
+    if (CurTok.type != IDENT) {
+      return LogError(CurTok, "expected identifier after type specifier");
+    }
 
-        if (PrevTok.type != VOID_TOK)
-          return std::make_unique<GlobVarDeclAST>(std::move(ident),
-                                                  PrevTok.lexeme);
-        else
-          return LogError(PrevTok,
-                          "Cannot have variable declaration with type 'void'");
-      } else if (CurTok.type ==
-                 LPAR) { // found '(' then this is a function declaration.
-        getNextToken();  // eat (
+    IdName = CurTok.getIdentifierStr();
+    auto ident = std::make_unique<VariableASTnode>(CurTok, IdName);
+    getNextToken(); // eat IDENT
 
-        auto P =
-            ParseParams(); // parse the parameters, returns a vector of params
-        // if (P.size() == 0) return nullptr;
-        fprintf(stderr, "Parsed parameter list for function\n");
+    // ================= ARRAY DECLARATION (global) =================
+    // Only int[] and float[] are allowed as arrays
+    if ((typeTok.type == INT_TOK || typeTok.type == FLOAT_TOK) &&
+        CurTok.type == LBOX) {
 
-        if (CurTok.type != RPAR) // syntax error
-          return LogError(CurTok, "expected ')' in function declaration");
+      // Parse [N], [N][M] or [N][M][K]
+      auto dims = ParseArrayDimsDecl();
 
-        getNextToken();          // eat )
-        if (CurTok.type != LBRA) // syntax error
-          return LogError(
-              CurTok, "expected '{' in function declaration, function body");
+      if (CurTok.type != SC) {
+        return LogError(CurTok, "expected ';' after array declaration");
+      }
+      getNextToken(); // eat ';'
 
-        auto B = ParseBlock(); // parse the function body
-        if (!B)
-          return nullptr;
-        else
-          fprintf(stderr, "Parsed block of statements in function\n");
+      fprintf(stderr, "Parsed a global array declaration\n");
+      return std::make_unique<ArrayDeclAST>(
+          std::move(ident),
+          typeTok.lexeme,      // "int" or "float"
+          std::move(dims));
+    }
+    // ================= END ARRAY DECLARATION BRANCH =================
 
-        // now create a Function prototype
-        // create a Function body
-        // put these to together
-        // and return a std::unique_ptr<FunctionDeclAST>
-        fprintf(stderr, "Parsed a function declaration\n");
+    // Plain global variable declaration: int x;
+    if (CurTok.type == SC) {
+      getNextToken(); // eat ';'
+      fprintf(stderr, "Parsed a variable declaration\n");
 
-        auto Proto = std::make_unique<FunctionPrototypeAST>(
-            IdName, PrevTok.lexeme, std::move(P));
-        return std::make_unique<FunctionDeclAST>(std::move(Proto),
-                                                 std::move(B));
-      } else
-        return LogError(CurTok, "expected ';' or ('");
-    } else
-      return LogError(CurTok, "expected an identifier");
+      if (typeTok.type == VOID_TOK) {
+        return LogError(typeTok, "cannot declare variable of type 'void'");
+      }
 
-  } else
-    LogError(CurTok,
-             "expected 'void', 'int' or 'float' or EOF token"); // syntax error
+      return std::make_unique<GlobVarDeclAST>(
+          std::move(ident),
+          typeTok.lexeme);
+    }
 
+    // Function declaration: int f(...) { ... }
+    if (CurTok.type == LPAR) {
+      getNextToken(); // eat '('
+
+      auto P = ParseParams();
+      fprintf(stderr, "Parsed parameter list for function\n");
+
+      if (CurTok.type != RPAR) {
+        return LogError(CurTok, "expected ')' in function declaration");
+      }
+      getNextToken(); // eat ')'
+
+      if (CurTok.type != LBRA) {
+        return LogError(
+            CurTok,
+            "expected '{' to start function body in declaration");
+      }
+
+      auto B = ParseBlock();
+      if (!B) {
+        return nullptr;
+      }
+
+      fprintf(stderr, "Parsed block of statements in function\n");
+      fprintf(stderr, "Parsed a function declaration\n");
+
+      auto Proto = std::make_unique<FunctionPrototypeAST>(
+          IdName,
+          typeTok.lexeme,
+          std::move(P));
+
+      return std::make_unique<FunctionDeclAST>(
+          std::move(Proto),
+          std::move(B));
+    }
+
+    // None of ';', '[', '(' after identifier
+    return LogError(CurTok, "expected ';', '[', or '(' after declarator");
+  }
+
+  LogError(CurTok, "expected 'void', 'int', 'float' or 'bool' or EOF token");
   return nullptr;
 }
+
 
 // decl_list_prime ::= decl decl_list_prime
 //                  |  ε
@@ -2017,6 +2250,13 @@ static std::vector<std::map<std::string, AllocaInst*>> ScopeStack;
 // Global symbols for file scope (name -> GlobalVariable)
 static std::map<std::string, GlobalVariable*> GlobalNamedValues;
 
+// Metadata for array parameters (name -> element type and dims)
+struct ArrayParamMeta {
+  Type* ElemTy;              // pointee type of the parameter pointer
+  std::vector<int> Dims;     // full declared dims, e.g. [5], [5,3]
+};
+
+static std::map<std::string, ArrayParamMeta> ArrayParamInfo;
 // Canonical MiniC types
 static Type* miniCIntTy()   { return Type::getInt32Ty(TheContext); }
 static Type* miniCBoolTy()  { return Type::getInt1Ty(TheContext);  }
@@ -2032,18 +2272,57 @@ static Type* typeFromString(const std::string& t) {
   exit(2);
 }
 
+// Build a nested LLVM ArrayType for dims like [D1][D2][D3]
+static Type* buildArrayType(Type* elemTy, const std::vector<int>& dims) {
+  Type* arrTy = elemTy;
+  for (int i = (int)dims.size() - 1; i >= 0; --i) {
+    if (dims[i] <= 0) {
+      fprintf(stderr, "Array dimension must be positive, got %d\n", dims[i]);
+      exit(2);
+    }
+    arrTy = ArrayType::get(arrTy, dims[i]);
+  }
+  return arrTy;
+}
+
+
+
 // Build an LLVM FunctionType from a MiniC prototype
 static FunctionType* functionTypeFromProto(const FunctionPrototypeAST* P) {
   std::vector<Type*> paramTypes;
   paramTypes.reserve(P->getSize());
 
   for (const auto& param : P->getParams()) {
-    paramTypes.push_back(typeFromString(param->getType()));
+    Type* baseTy = typeFromString(param->getType());
+    const auto& dims = param->getDims();
+
+    if (dims.empty()) {
+      // Scalar parameter
+      paramTypes.push_back(baseTy);
+    } else {
+      // Array parameter. Represent as a pointer in LLVM IR.
+      // For 1D: int a[10]  →  i32*
+      // For 2D/3D: int a[10][5] -> pointer to [5 x i32], etc.
+      Type* elemTy = baseTy;
+
+      if (dims.size() > 1) {
+        // Drop the first dimension (C-style array parameter decay)
+        std::vector<int> tailDims(dims.begin() + 1, dims.end());
+        for (int i = (int)tailDims.size() - 1; i >= 0; --i) {
+          elemTy = ArrayType::get(elemTy, tailDims[i]);
+        }
+      }
+
+      Type* ptrTy = PointerType::get(TheContext, 0);
+      paramTypes.push_back(ptrTy);
+
+    }
   }
 
   Type* retTy = typeFromString(P->getType());
   return FunctionType::get(retTy, paramTypes, /*isVarArg=*/false);
 }
+
 
 // Declare a function in the module from a prototype, or check a previous one
 static Function* declareFunctionFromProto(const FunctionPrototypeAST* P) {
@@ -2210,6 +2489,8 @@ static Value* castTo(Type* dstTy, Value* v, const char* context) {
   exit(2);
 }
 
+
+
 // ---- Block codegen ----
 // Blocks create a new scope, allocate locals in the function entry, then emit statements.
 Value* BlockAST::codegen() {
@@ -2226,21 +2507,9 @@ Value* BlockAST::codegen() {
     exit(2);
   }
 
-  // Allocate and zero-initialise each local in the function entry
+  // Allocate each local via its own codegen (works for scalars and arrays)
   for (auto& d : LocalDecls) {
-    const std::string& name = d->getName();
-    Type* ty = typeFromString(d->getType());
-
-    // MINIC_RULE_LOCAL_SHADOW
-    if (lookupLocalCurrent(name)) {
-      fprintf(stderr, "Redeclaration of local '%s'\n", name.c_str());
-      exit(2);
-    }
-
-
-    AllocaInst* slot = CreateEntryAlloca(F, name, ty);
-    Builder.CreateStore(zeroOf(ty), slot);
-    NamedValues[name] = slot;
+    d->codegen();
   }
 
   // Emit statements in order
@@ -2252,124 +2521,408 @@ Value* BlockAST::codegen() {
   return nullptr;
 }
 
-// ---- Literals codegen ----
 
-// int literal -> i32 constant
-Value* IntASTnode::codegen() {
-  return ConstantInt::get(miniCIntTy(), Val, /*isSigned=*/true);
-}
-
-// float literal -> double constant
-Value* FloatASTnode::codegen() {
-  return ConstantFP::get(miniCFloatTy(), Val);
-}
-
-// bool literal -> i1 constant
-Value* BoolASTnode::codegen() {
-  return ConstantInt::get(miniCBoolTy(), Bool ? 1 : 0);
-}
-
-// --- Variables codegen ---
-Value* VariableASTnode::codegen() {  
-    AllocaInst* local = lookupLocal(Name);  
-    if (local) {
-        auto* val = Builder.CreateLoad(local->getAllocatedType(), local, Name.c_str()); 
-        return val;
-    }
-    
-    GlobalVariable* global = lookupGlobal(Name);  
-    if (global) {
-        auto* val = Builder.CreateLoad(global->getValueType(), global, Name.c_str());
-        return val;  
-    }
-    
-    // Not found - error!
-    fprintf(stderr, "Unknown variable name: %s\n", Name.c_str());
+Value* VarDeclAST::codegen() {
+  BasicBlock* curBB = Builder.GetInsertBlock();
+  if (!curBB) {
+    fprintf(stderr, "Local variable '%s' declared outside of a function\n",
+            getName().c_str());
     exit(2);
-}
+  }
 
-Value* UnaryExprAST::codegen(){
-    Value *v = Operand->codegen();
-    if (!v) return nullptr;  
-    Type* T = v->getType();
-    
-    if (Op == '-') {
-        if (isInt(T)) {
-            return Builder.CreateNeg(v, "ineg");
-        }
-        if (isFloat(T)) {
-            return Builder.CreateFNeg(v, "fneg");
-        }
-        Value* bool_int = castTo(miniCIntTy(), v, "u-");
-        return Builder.CreateNeg(bool_int, "ineg");
-    }
-    
-    if (Op == '!'){  
-        Value* bool_val = castTo(miniCBoolTy(), v , "u!");
-        return Builder.CreateNot(bool_val, "not"); 
-    }
-    
-    fprintf(stderr , "unkown unary operator, '%c'\n", Op); 
+  Function* F = curBB->getParent();
+  if (!F) {
+    fprintf(stderr, "Local variable '%s' declared with no parent function\n",
+            getName().c_str());
     exit(2);
-}
+  }
 
-Value* AssignAST::codegen() {
-    auto* lhsVar = getLHS();
-    const std::string& name = lhsVar->getName();
-
-    // local variable target
-    if (AllocaInst* local_var_memory = lookupLocal(name)) {
-        Type* dstTy = local_var_memory->getAllocatedType();
-        Value* rhs  = getRHS()->codegen();
-        if (!rhs) return nullptr;
-
-        Type* srcTy = rhs->getType();
-
-        // MINIC_RULE_ASSIGN_WIDENING
-        if (srcTy != dstTy) {
-            if (!isWideningType(srcTy, dstTy)) {
-                fprintf(stderr, "Illegal narrowing assignment to '%s'\n",
-                        name.c_str());
-                errs() << "  target type: "; dstTy->print(errs());
-                errs() << "\n  value type:  "; srcTy->print(errs());
-                errs() << "\n";
-                exit(2);
-            }
-            rhs = castTo(dstTy, rhs, "assign");
-        }
-
-        Builder.CreateStore(rhs, local_var_memory);
-        return rhs;
-    }
-
-    // global variable target
-    if (GlobalVariable* g = lookupGlobal(name)) {
-        Type* dstTy = g->getValueType();
-        Value* rhs  = getRHS()->codegen();
-        if (!rhs) return nullptr;
-
-        Type* srcTy = rhs->getType();
-
-        // MINIC_RULE_ASSIGN_WIDENING
-        if (srcTy != dstTy) {
-            if (!isWideningType(srcTy, dstTy)) {
-                fprintf(stderr, "Illegal narrowing assignment to global '%s'\n",
-                        name.c_str());
-                errs() << "  target type: "; dstTy->print(errs());
-                errs() << "\n  value type:  "; srcTy->print(errs());
-                errs() << "\n";
-                exit(2);
-            }
-            rhs = castTo(dstTy, rhs, "assign");
-        }
-
-        Builder.CreateStore(rhs, g);
-        return rhs;
-    }
-
-    fprintf(stderr, "Assignment to unknown variable '%s'\n", name.c_str());
+  const std::string& name = getName();
+  if (lookupLocalCurrent(name)) {
+    fprintf(stderr, "Redeclaration of local '%s'\n", name.c_str());
     exit(2);
+  }
+
+  Type* ty = typeFromString(getType());
+  AllocaInst* slot = CreateEntryAlloca(F, name, ty);
+  Builder.CreateStore(zeroOf(ty), slot);
+  NamedValues[name] = slot;
+  return slot;
 }
+
+
+Value* ArrayDeclAST::codegen() {
+  const std::string& name = getName();
+  Type* elemTy = typeFromString(getType());
+  const std::vector<int>& dims = getDims();
+
+  if (dims.empty()) {
+    fprintf(stderr, "Array '%s' has no dimensions\n", name.c_str());
+    exit(2);
+  }
+
+  Type* arrTy = buildArrayType(elemTy, dims);
+
+  BasicBlock* curBB = Builder.GetInsertBlock();
+  Function* F = curBB ? curBB->getParent() : nullptr;
+
+  // Global array
+  if (!F) {
+    if (lookupGlobal(name) || GlobalNamedValues.count(name)) {
+      fprintf(stderr, "Redeclaration of global array '%s'\n", name.c_str());
+      exit(2);
+    }
+    if (TheModule->getFunction(name)) {
+      fprintf(stderr,
+              "Global array '%s' conflicts with a function of the same name\n",
+              name.c_str());
+      exit(2);
+    }
+
+    Constant* init = ConstantAggregateZero::get(arrTy);
+    auto* G = new GlobalVariable(
+        *TheModule,
+        arrTy,
+        /*isConstant=*/false,
+        GlobalValue::ExternalLinkage,
+        init,
+        name);
+
+    GlobalNamedValues[name] = G;
+    return G;
+  }
+
+  // Local array
+  if (lookupLocalCurrent(name)) {
+    fprintf(stderr, "Redeclaration of local array '%s'\n", name.c_str());
+    exit(2);
+  }
+
+  AllocaInst* slot = CreateEntryAlloca(F, name, arrTy);
+  Builder.CreateStore(ConstantAggregateZero::get(arrTy), slot);
+  NamedValues[name] = slot;
+  return slot;
+}
+
+Value* ArrayAccessAST::codegen() {
+  Value* basePtr = nullptr;
+  Type*  baseTy  = nullptr;
+  AllocaInst* localAlloca = nullptr;
+
+  if (AllocaInst* local = lookupLocal(name)) {
+    basePtr = local;
+    baseTy  = local->getAllocatedType();
+    localAlloca = local;
+  } else if (GlobalVariable* global = lookupGlobal(name)) {
+    basePtr = global;
+    baseTy  = global->getValueType();
+  } else {
+    fprintf(stderr, "Unknown array '%s'\n", name.c_str());
+    exit(2);
+  }
+
+  // Case 1: true array variable (local or global) with ArrayType
+  if (auto* arrTy = dyn_cast<ArrayType>(baseTy)) {
+    std::vector<Value*> idxList;
+    idxList.push_back(ConstantInt::get(getIntTy(), 0)); // first index
+
+    Type* curTy = baseTy;
+    for (size_t i = 0; i < indices.size(); ++i) {
+      if (!isa<ArrayType>(curTy)) {
+        fprintf(stderr, "Too many indices supplied for array '%s'\n",
+                name.c_str());
+        exit(2);
+      }
+
+      Value* idxV = indices[i]->codegen();
+      if (!idxV) return nullptr;
+      idxV = castTo(getIntTy(), idxV, "arrayidx");
+      idxList.push_back(idxV);
+
+      curTy = cast<ArrayType>(curTy)->getElementType();
+    }
+
+    if (isa<ArrayType>(curTy)) {
+      fprintf(stderr, "Too few indices supplied for array '%s'\n",
+              name.c_str());
+      exit(2);
+    }
+
+    Value* elemPtr = nullptr;
+    if (localAlloca) {
+      elemPtr = Builder.CreateInBoundsGEP(baseTy, localAlloca, idxList,
+                                          name + "_elem_ptr");
+    } else {
+      elemPtr = Builder.CreateInBoundsGEP(baseTy, basePtr, idxList,
+                                          name + "_elem_ptr");
+    }
+
+    return Builder.CreateLoad(curTy, elemPtr, name + "_elem");
+  }
+
+  // Case 2: pointer-style array (e.g. function parameter int a[10])
+  if (auto* ptrTy = dyn_cast<PointerType>(baseTy)) {
+    Value* ptrVal = nullptr;
+    if (localAlloca) {
+      ptrVal = Builder.CreateLoad(ptrTy, localAlloca, name + "_ptr");
+    } else {
+      ptrVal = basePtr; // pointer global, rare but possible
+    }
+
+    auto metaIt = ArrayParamInfo.find(name);
+    if (metaIt == ArrayParamInfo.end()) {
+      fprintf(stderr,
+              "Pointer variable '%s' used in array access is not a known array parameter\n",
+              name.c_str());
+      exit(2);
+    }
+    Type* elemTy = metaIt->second.ElemTy;
+
+    if (indices.empty()) {
+      fprintf(stderr, "Array access on '%s' needs at least one index\n",
+              name.c_str());
+      exit(2);
+    }
+
+    // Simple 1D: elemTy is not an ArrayType, a[i]
+    if (!isa<ArrayType>(elemTy)) {
+      if (indices.size() != 1) {
+        fprintf(stderr, "Too many indices for 1D pointer '%s'\n",
+                name.c_str());
+        exit(2);
+      }
+
+      Value* idxV = indices[0]->codegen();
+      if (!idxV) return nullptr;
+      idxV = castTo(getIntTy(), idxV, "arrayidx");
+
+      Value* elemPtr = Builder.CreateInBoundsGEP(
+          elemTy,
+          ptrVal,
+          std::vector<Value*>{ idxV },
+          name + "_elem_ptr");
+
+      return Builder.CreateLoad(elemTy, elemPtr, name + "_elem");
+    }
+
+    // Pointer to array-of-... for 2D/3D parameters
+    Type* curElemTy = elemTy;
+    std::vector<Value*> gepIdx;
+
+    // First index selects which array in the parameter
+    Value* firstIdx = indices[0]->codegen();
+    if (!firstIdx) return nullptr;
+    firstIdx = castTo(getIntTy(), firstIdx, "arrayidx");
+    gepIdx.push_back(firstIdx);
+
+    // Remaining indices drill inside nested arrays
+    for (size_t i = 1; i < indices.size(); ++i) {
+      if (!isa<ArrayType>(curElemTy)) {
+        fprintf(stderr, "Too many indices for pointer-to-array '%s'\n",
+                name.c_str());
+        exit(2);
+      }
+
+      Value* idxV = indices[i]->codegen();
+      if (!idxV) return nullptr;
+      idxV = castTo(getIntTy(), idxV, "arrayidx");
+      gepIdx.push_back(idxV);
+
+      curElemTy = cast<ArrayType>(curElemTy)->getElementType();
+    }
+
+    if (isa<ArrayType>(curElemTy)) {
+      fprintf(stderr, "Too few indices for pointer-to-array '%s'\n",
+              name.c_str());
+      exit(2);
+    }
+
+    Value* elemPtr = Builder.CreateInBoundsGEP(
+        elemTy,
+        ptrVal,
+        gepIdx,
+        name + "_elem_ptr");
+
+    return Builder.CreateLoad(curElemTy, elemPtr, name + "_elem");
+  }
+
+  fprintf(stderr, "'%s' is not an array or pointer value\n", name.c_str());
+  exit(2);
+}
+
+
+Value* ArrayAssignAST::codegen() {
+  ArrayAccessAST* lhs = getLHS();
+  const std::string &name = lhs->getName();
+  const auto &indices = lhs->getIndices();
+
+  // Find base symbol
+  Value* basePtr = nullptr;
+  Type*  baseTy  = nullptr;
+  AllocaInst* localAlloca = nullptr;
+
+  if (AllocaInst* local = lookupLocal(name)) {
+    basePtr = local;
+    baseTy  = local->getAllocatedType();
+    localAlloca = local;
+  } else if (GlobalVariable* global = lookupGlobal(name)) {
+    basePtr = global;
+    baseTy  = global->getValueType();
+  } else {
+    fprintf(stderr, "Unknown array '%s' in assignment\n", name.c_str());
+    exit(2);
+  }
+
+  Value* elemPtr = nullptr;
+  Type*  elemTy  = nullptr;
+
+  // Case 1: true ArrayType
+  if (auto* arrTy = dyn_cast<ArrayType>(baseTy)) {
+    std::vector<Value*> idxList;
+    idxList.push_back(ConstantInt::get(getIntTy(), 0));
+
+    Type* curTy = baseTy;
+    for (size_t i = 0; i < indices.size(); ++i) {
+      if (!isa<ArrayType>(curTy)) {
+        fprintf(stderr, "Too many indices for array '%s' in assignment\n",
+                name.c_str());
+        exit(2);
+      }
+
+      Value* idxV = indices[i]->codegen();
+      if (!idxV) return nullptr;
+      idxV = castTo(getIntTy(), idxV, "arrayidx");
+      idxList.push_back(idxV);
+
+      curTy = cast<ArrayType>(curTy)->getElementType();
+    }
+
+    if (isa<ArrayType>(curTy)) {
+      fprintf(stderr, "Too few indices for array '%s' in assignment\n",
+              name.c_str());
+      exit(2);
+    }
+
+    elemTy = curTy;
+
+    if (localAlloca) {
+      elemPtr = Builder.CreateInBoundsGEP(baseTy, localAlloca, idxList,
+                                          name + "_elem_ptr");
+    } else {
+      elemPtr = Builder.CreateInBoundsGEP(baseTy, basePtr, idxList,
+                                          name + "_elem_ptr");
+    }
+  }
+
+  // Case 2: pointer-style parameter
+  else if (auto* ptrTy = dyn_cast<PointerType>(baseTy)) {
+    Value* ptrVal = nullptr;
+    if (localAlloca) {
+      ptrVal = Builder.CreateLoad(ptrTy, localAlloca, name + "_ptr");
+    } else {
+      ptrVal = basePtr;
+    }
+
+    auto metaIt = ArrayParamInfo.find(name);
+    if (metaIt == ArrayParamInfo.end()) {
+      fprintf(stderr,
+              "Pointer variable '%s' used in array assignment is not a known array parameter\n",
+              name.c_str());
+      exit(2);
+    }
+    Type* innerTy = metaIt->second.ElemTy;
+
+    if (indices.empty()) {
+      fprintf(stderr, "Array assignment to '%s' needs at least one index\n",
+              name.c_str());
+      exit(2);
+    }
+
+    if (!isa<ArrayType>(innerTy)) {
+      // 1D pointer parameter
+      if (indices.size() != 1) {
+        fprintf(stderr, "Too many indices for 1D pointer '%s' in assignment\n",
+                name.c_str());
+        exit(2);
+      }
+
+      Value* idxV = indices[0]->codegen();
+      if (!idxV) return nullptr;
+      idxV = castTo(getIntTy(), idxV, "arrayidx");
+
+      elemTy = innerTy;
+      elemPtr = Builder.CreateInBoundsGEP(
+          innerTy,
+          ptrVal,
+          std::vector<Value*>{ idxV },
+          name + "_elem_ptr");
+    } else {
+      // Pointer to array-of-... parameter
+      Type* curElemTy = innerTy;
+      std::vector<Value*> gepIdx;
+
+      Value* firstIdx = indices[0]->codegen();
+      if (!firstIdx) return nullptr;
+      firstIdx = castTo(getIntTy(), firstIdx, "arrayidx");
+      gepIdx.push_back(firstIdx);
+
+      for (size_t i = 1; i < indices.size(); ++i) {
+        if (!isa<ArrayType>(curElemTy)) {
+          fprintf(stderr, "Too many indices for pointer-to-array '%s'\n",
+                  name.c_str());
+          exit(2);
+        }
+
+        Value* idxV = indices[i]->codegen();
+        if (!idxV) return nullptr;
+        idxV = castTo(getIntTy(), idxV, "arrayidx");
+        gepIdx.push_back(idxV);
+
+        curElemTy = cast<ArrayType>(curElemTy)->getElementType();
+      }
+
+      if (isa<ArrayType>(curElemTy)) {
+        fprintf(stderr, "Too few indices for pointer-to-array '%s'\n",
+                name.c_str());
+        exit(2);
+      }
+
+      elemTy = curElemTy;
+      elemPtr = Builder.CreateInBoundsGEP(
+          innerTy,
+          ptrVal,
+          gepIdx,
+          name + "_elem_ptr");
+    }
+  }
+
+  else {
+    fprintf(stderr, "'%s' is not an array or pointer in assignment\n",
+            name.c_str());
+    exit(2);
+  }
+
+  // RHS value, with widening only
+  Value* rhs = getRHS()->codegen();
+  if (!rhs) return nullptr;
+
+  Type* srcTy = rhs->getType();
+  if (srcTy != elemTy) {
+    if (!isWideningType(srcTy, elemTy)) {
+      fprintf(stderr, "Illegal narrowing in array assignment to '%s'\n",
+              name.c_str());
+      errs() << "  element type: "; elemTy->print(errs());
+      errs() << "\n  value type:   "; srcTy->print(errs());
+      errs() << "\n";
+      exit(2);
+    }
+    rhs = castTo(elemTy, rhs, "arrayassign");
+  }
+
+  Builder.CreateStore(rhs, elemPtr);
+  return rhs;
+}
+
 
 
 
@@ -2577,8 +3130,11 @@ Value* FunctionDeclAST::codegen() {
     // Reset symbol tables for this function
     NamedValues.clear();
     ScopeStack.clear();
+    ArrayParamInfo.clear();
 
     // Allocate each argument in the entry block and store the value
+    idx = 0;
+        // Allocate each argument in the entry block and store the value
     idx = 0;
     for (auto &arg : F->args()) {
         std::string argName = std::string(arg.getName());
@@ -2587,7 +3143,30 @@ Value* FunctionDeclAST::codegen() {
         AllocaInst *slot = CreateEntryAlloca(F, argName, argType);
         Builder.CreateStore(&arg, slot);
         NamedValues[argName] = slot;
+
+        // Record metadata for array parameters
+        const auto &paramUPtr = Proto->getParams()[idx];
+        const ParamAST *param = paramUPtr.get();
+        if (param->isArrayParam()) {
+            Type *baseTy = typeFromString(param->getType());
+            const auto &dims = param->getDims();
+
+            // Element type that the parameter pointer points to
+            // 1D: elemTy = baseTy
+            // 2D/3D: elemTy = array of inner dims
+            Type *elemTy = baseTy;
+            if (dims.size() > 1) {
+                for (int i = (int)dims.size() - 1; i >= 1; --i) {
+                    elemTy = ArrayType::get(elemTy, dims[i]);
+                }
+            }
+
+            ArrayParamInfo[argName] = { elemTy, dims };
+        }
+
+        ++idx;
     }
+
 
     // Generate code for the body block
     if (Block) {
@@ -2809,6 +3388,132 @@ Value* ReturnAST::codegen() {
     return Builder.CreateRet(return_val);
 }
 
+// ======== Literal codegen ========
+
+Value* IntASTnode::codegen() {
+  // 32 bit signed integer literal
+  return ConstantInt::get(miniCIntTy(), Val, true);
+}
+
+Value* FloatASTnode::codegen() {
+  // single precision float literal
+  return ConstantFP::get(miniCFloatTy(), Val);
+}
+
+Value* BoolASTnode::codegen() {
+  // i1 boolean literal
+  return ConstantInt::get(miniCBoolTy(), Bool ? 1 : 0, false);
+}
+
+// ======== Variable reference codegen ========
+
+Value* VariableASTnode::codegen() {
+  const std::string &name = getName();
+
+  // look in local scopes first
+  if (AllocaInst* local = lookupLocal(name)) {
+    Type* ty = local->getAllocatedType();
+    return Builder.CreateLoad(ty, local, name + "_val");
+  }
+
+  // then globals
+  if (GlobalVariable* global = lookupGlobal(name)) {
+    Type* ty = global->getValueType();
+    return Builder.CreateLoad(ty, global, name + "_val");
+  }
+
+  fprintf(stderr, "Unknown variable '%s'\n", name.c_str());
+  exit(2);
+}
+
+// ======== Unary operator codegen ========
+
+Value* UnaryExprAST::codegen() {
+  Value* operandV = Operand->codegen();
+  if (!operandV) return nullptr;
+
+  switch (Op) {
+    case '-': {
+      Type* T = operandV->getType();
+
+      // widen bool to int for unary minus
+      if (isBoolTy(T)) {
+        operandV = castTo(getIntTy(), operandV, "u_minus");
+        T = operandV->getType();
+      }
+
+      if (isFloatTy(T)) {
+        return Builder.CreateFNeg(operandV, "negtmp");
+      }
+      if (isIntTy(T)) {
+        return Builder.CreateNeg(operandV, "negtmp");
+      }
+
+      fprintf(stderr, "Invalid operand type for unary '-'\n");
+      exit(2);
+    }
+
+    case '!': {
+      // force operand to bool then logical not
+      Value* boolV = castTo(getBoolTy(), operandV, "u_not");
+      return Builder.CreateNot(boolV, "nottmp");
+    }
+
+    default:
+      fprintf(stderr, "Unknown unary operator '%c'\n", Op);
+      exit(2);
+  }
+
+  return nullptr;
+}
+
+// ======== Assignment codegen (scalar variables) ========
+
+Value* AssignAST::codegen() {
+  const std::string &name = LHS->getName();
+
+  AllocaInst* local = lookupLocal(name);
+  GlobalVariable* global = lookupGlobal(name);
+
+  if (!local && !global) {
+    fprintf(stderr, "Assignment to unknown variable '%s'\n", name.c_str());
+    exit(2);
+  }
+
+  // pointer to storage and declared type
+  Value* destPtr = nullptr;
+  Type* varTy = nullptr;
+
+  if (local) {
+    destPtr = local;
+    varTy = local->getAllocatedType();
+  } else {
+    destPtr = global;
+    varTy = global->getValueType();
+  }
+
+  // compute RHS value
+  Value* rhsV = RHS->codegen();
+  if (!rhsV) return nullptr;
+
+  Type* rhsTy = rhsV->getType();
+
+  // enforce widening only
+  if (rhsTy != varTy) {
+    if (!isWideningType(rhsTy, varTy)) {
+      fprintf(stderr, "Illegal narrowing in assignment to '%s'\n",
+              name.c_str());
+      errs() << "  variable type: "; varTy->print(errs());
+      errs() << "\n  value type:    "; rhsTy->print(errs());
+      errs() << "\n";
+      exit(2);
+    }
+    rhsV = castTo(varTy, rhsV, "assign");
+  }
+
+  Builder.CreateStore(rhsV, destPtr);
+  return rhsV;
+}
 
 
 
