@@ -33,11 +33,16 @@
 #include <system_error>
 #include <utility>
 #include <vector>
+#include <fstream>
+
 
 using namespace llvm;
 using namespace llvm::sys;
 
 FILE *pFile;
+
+static std::vector<std::string> SourceLines;
+
 
 //===----------------------------------------------------------------------===//
 // Lexer
@@ -120,44 +125,46 @@ public:
   const bool getBoolVal() const;
 };
 
+static void printErrorAt(const TOKEN &tok, const char *msg);
+static void printErrorAtCurrent(const char *msg);
+
 static std::string globalLexeme;
 static int lineNo, columnNo;
 
 const std::string TOKEN::getIdentifierStr() const {
   if (type != IDENT) {
-    fprintf(stderr, "%d:%d Error: %s\n", lineNo, columnNo,
-            "getIdentifierStr called on non-IDENT token");
+    printErrorAt(*this, "getIdentifierStr called on non-IDENT token");
     exit(2);
   }
-  return lexeme;
+  return this->lexeme;
 }
+
 
 const int TOKEN::getIntVal() const {
   if (type != INT_LIT) {
-    fprintf(stderr, "%d:%d Error: %s\n", lineNo, columnNo,
-            "getIntVal called on non-INT_LIT token");
+    printErrorAt(*this, "getIntVal called on non-INT_LIT token");
     exit(2);
   }
-  return strtod(lexeme.c_str(), nullptr);
+  return static_cast<int>(strtod(this->lexeme.c_str(), nullptr));
 }
 
 const float TOKEN::getFloatVal() const {
   if (type != FLOAT_LIT) {
-    fprintf(stderr, "%d:%d Error: %s\n", lineNo, columnNo,
-            "getFloatVal called on non-FLOAT_LIT token");
+    printErrorAt(*this, "getFloatVal called on non-FLOAT_LIT token");
     exit(2);
   }
-  return strtof(lexeme.c_str(), nullptr);
+  return strtof(this->lexeme.c_str(), nullptr);
 }
 
 const bool TOKEN::getBoolVal() const {
   if (type != BOOL_LIT) {
-    fprintf(stderr, "%d:%d Error: %s\n", lineNo, columnNo,
-            "getBoolVal called on non-BOOL_LIT token");
+    printErrorAt(*this, "getBoolVal called on non-BOOL_LIT token");
     exit(2);
   }
-  return (lexeme == "true");
+  return (this->lexeme == "true");
 }
+
+
 
 static TOKEN returnTok(std::string lexVal, int tok_type) {
   TOKEN return_tok;
@@ -489,6 +496,10 @@ public:
   virtual ~ASTnode() {}
   virtual Value *codegen() { return nullptr; }
 
+  // New: source location hooks, default to unknown
+  virtual int getLine() const { return -1; }
+  virtual int getCol() const  { return -1; }
+
   // Simple type tags so main can order codegen without RTTI
   virtual bool isGlobVarDecl() const { return false; }
   virtual bool isFunctionDecl() const { return false; }
@@ -538,6 +549,8 @@ public:
   const std::string &getType() const { return Tok.lexeme; }
   void to_string_inner(std::string& out, int indent) const override;
   Value *codegen() override;
+  int getLine() const override { return Tok.lineNo; }
+  int getCol()  const override { return Tok.columnNo; }
 };
 
 /// BoolASTnode - Class for boolean literals true and false,
@@ -550,6 +563,8 @@ public:
   const std::string &getType() const { return Tok.lexeme; }
   void to_string_inner(std::string& out, int indent) const override;
   Value *codegen() override;
+  int getLine() const override { return Tok.lineNo; }
+  int getCol()  const override { return Tok.columnNo; }
 };
 
 /// FloatASTnode - Node class for floating point literals like "1.0".
@@ -562,6 +577,8 @@ public:
   const std::string &getType() const { return Tok.lexeme; }
   void to_string_inner(std::string& out, int indent) const override;
   Value *codegen() override;
+  int getLine() const override { return Tok.lineNo; }
+  int getCol()  const override { return Tok.columnNo; }
 };
 
 /// VariableASTnode - Class for referencing a variable (i.e. identifier), like
@@ -581,6 +598,8 @@ public:
   const IDENT_TYPE getVarType() const { return VarType; }
   void to_string_inner(std::string& out, int indent) const override;
   Value *codegen() override;
+  int getLine() const override { return Tok.lineNo; }
+  int getCol()  const override { return Tok.columnNo; }
 };
 
 /// ParamAST - Class for a parameter declaration
@@ -624,31 +643,33 @@ class VarDeclAST : public DeclAST {
 };
 
 /// VarDeclAST - Class for a variable declaration
-class ArrayDeclAST : public VarDeclAST { 
+class ArrayDeclAST : public VarDeclAST {
   std::vector<int> Dimensions;
-  
+
 public:
-  ArrayDeclAST(std::unique_ptr<VariableASTnode> var, 
-               const std::string& type, 
+  ArrayDeclAST(std::unique_ptr<VariableASTnode> var,
+               const std::string &type,
                std::vector<int> dimensions_list)
-      : VarDeclAST(std::move(var), type), 
+      : VarDeclAST(std::move(var), type),
         Dimensions(std::move(dimensions_list)) {}
 
-  const std::vector<int>& getDims() const { 
-    return Dimensions; 
+  // Important: explicit virtual destructor so the vtable has a key function
+  ~ArrayDeclAST() override;
+
+  const std::vector<int> &getDims() const {
+    return Dimensions;
   }
 
-  // treat as a global decl at top level
+  // Treat as a global decl at top level when used in gTopDecls
   bool isGlobVarDecl() const override { return true; }
 
-  Value *codegen() override;   // codegen call 
-  
+  Value *codegen() override;
+
   void to_string_inner(std::string &out, int indent) const override {
     std::string line = "ArrayDecl " + getName() + " : " + getType() + " [";
-    
     for (size_t i = 0; i < Dimensions.size(); ++i) {
       line += std::to_string(Dimensions[i]);
-      if (i + 1 < Dimensions.size()) 
+      if (i + 1 < Dimensions.size())
         line += "][";
     }
     line += "]";
@@ -738,6 +759,14 @@ public:
   ASTnode* getLHS() const { return LHS.get(); }
   ASTnode* getRHS() const { return RHS.get(); }
 
+  int getLine() const override {
+    return LHS ? LHS->getLine() : -1;
+  }
+
+  int getCol() const override {
+    return LHS ? LHS->getCol() : -1;
+  }
+
   Value *codegen() override;
   void to_string_inner(std::string& out, int indent) const override;
 };
@@ -755,43 +784,46 @@ public:
   VariableASTnode* getLHS() const { return LHS.get(); }
   ASTnode* getRHS() const { return RHS.get(); }
 
+  int getLine() const override { return LHS ? LHS->getLine() : -1; }
+  int getCol()  const override { return LHS ? LHS->getCol()  : -1; }
+
   Value* codegen() override;           // declaration only
   void to_string_inner(std::string& out, int indent) const override;
 };
 
 class ArrayAccessAST : public ASTnode {
+  TOKEN NameTok;                                       // new
   std::string name;                                    
   std::vector<std::unique_ptr<ASTnode>> indices;      
   
 public:
-  // Constructor 
-  ArrayAccessAST(const std::string& name, 
+  ArrayAccessAST(TOKEN nameTok,
+                 const std::string& name, 
                  std::vector<std::unique_ptr<ASTnode>> indices_param)
-      : name(name), indices(std::move(indices_param)) {}
-  
-  // Getters 
-  const std::string &getName() const {
-    return name;
-  }
-  
+      : NameTok(nameTok),
+        name(name),
+        indices(std::move(indices_param)) {}
+
+  const std::string &getName() const { return name; }
+
+  int getLine() const override { return NameTok.lineNo; }
+  int getCol()  const override { return NameTok.columnNo; }
+
   const std::vector<std::unique_ptr<ASTnode>> &getIndices() const {
     return indices;
   }
-  
-  // codegen 
+
   Value *codegen() override;
-  
-  // to_string_inner 
+
   void to_string_inner(std::string &out, int indent) const override {
-    appendln(out, indent, "ArrayAccess " + name);        
-    
-    for (size_t i = 0; i < indices.size(); ++i) {        
-      appendln(out, indent + 1,
-               "index[" + std::to_string(i) + "]:");
-      if (indices[i]) indices[i]->to_string_into(out, indent + 2);  
+    appendln(out, indent, "ArrayAccess " + name);
+    for (size_t i = 0; i < indices.size(); ++i) {
+      appendln(out, indent + 1, "index[" + std::to_string(i) + "]:");
+      if (indices[i]) indices[i]->to_string_into(out, indent + 2);
     }
   }
 };
+
 
 
 class ArrayAssignAST : public ASTnode {
@@ -946,24 +978,151 @@ public:
 
 };
 
+// Forward declarations for location-based error printing
+static void printErrorAt(const TOKEN &tok, const char *msg);
+static void printErrorAtCurrent(const char *msg);
+
+
 /// LogError* - These are little helper function for error handling.
 std::unique_ptr<ASTnode> LogError(TOKEN tok, const char *Str) {
-  fprintf(stderr, "%d:%d Error: %s\n", tok.lineNo, tok.columnNo, Str);
+  printErrorAt(tok, Str);
   exit(2);
   return nullptr;
 }
 
 std::unique_ptr<FunctionPrototypeAST> LogErrorP(TOKEN tok, const char *Str) {
-  LogError(tok, Str);
+  LogError(tok, Str);   // this already prints and exits
+  return nullptr;       // unreachable, keeps callers happy
+}
+
+
+// For callers which only supply a message, use CurTok as location
+std::unique_ptr<ASTnode> LogError(const char *Str) {
+  printErrorAtCurrent(Str);
   exit(2);
   return nullptr;
 }
 
-std::unique_ptr<ASTnode> LogError(const char *Str) {
-  fprintf(stderr, "Error: %s\n", Str);
-  exit(2);
-  return nullptr;
+
+static void printErrorAt(const TOKEN &tok, const char *msg) {
+  int line = tok.lineNo;
+  int col  = tok.columnNo;
+
+  // Header line: "line:col: error: message"
+  fprintf(stderr, "line %d, column %d: error: %s\n", line, col, msg);
+
+  // Print the source line if we have it
+  if (line >= 1 && line <= (int)SourceLines.size()) {
+    const std::string &src = SourceLines[line - 1];
+    fprintf(stderr, "%s\n", src.c_str());
+
+    // Print caret under the column, basic spacing
+    int caretCol = col;
+    if (caretCol < 1) caretCol = 1;
+    for (int i = 1; i < caretCol; ++i) {
+      char c = (i - 1 < (int)src.size()) ? src[i - 1] : ' ';
+      if (c == '\t') fputc('\t', stderr);
+      else fputc(' ', stderr);
+    }
+    fputc('^', stderr);
+    fputc('\n', stderr);
+  }
 }
+
+static void printErrorAtCurrent(const char *msg) {
+  // If CurTok has a sensible location, use it, otherwise fall back
+  if (CurTok.type != INVALID && CurTok.type != EOF_TOK) {
+    printErrorAt(CurTok, msg);
+  } else {
+    fprintf(stderr, "error: %s\n", msg);
+  }
+}
+
+static void printCodegenErrorAtNode(const ASTnode* node, const char *msg) {
+  if (!node) {
+    fprintf(stderr, "error: %s\n", msg);
+    return;
+  }
+
+  int line = node->getLine();
+  int col  = node->getCol();
+
+  if (line < 1 || col < 1 || line > (int)SourceLines.size()) {
+    // No useful location stored, fallback
+    fprintf(stderr, "error: %s\n", msg);
+    return;
+  }
+
+  fprintf(stderr, "line %d, column %d: error: %s\n", line, col, msg);
+
+  const std::string &src = SourceLines[line - 1];
+  fprintf(stderr, "%s\n", src.c_str());
+
+  int caretCol = col;
+  if (caretCol < 1) caretCol = 1;
+  for (int i = 1; i < caretCol; ++i) {
+    char c = (i - 1 < (int)src.size()) ? src[i - 1] : ' ';
+    if (c == '\t') fputc('\t', stderr);
+    else fputc(' ', stderr);
+  }
+  fputc('^', stderr);
+  fputc('\n', stderr);
+}
+
+// Print an error at an explicit (line, col)
+static void printErrorAtLocation(int line, int col, const char *msg) {
+  fprintf(stderr, "line %d, column %d: error: %s\n", line, col, msg);
+
+  if (line >= 1 && line <= (int)SourceLines.size()) {
+    const std::string &src = SourceLines[line - 1];
+    fprintf(stderr, "%s\n", src.c_str());
+
+    int caretCol = col;
+    if (caretCol < 1) caretCol = 1;
+    for (int i = 1; i < caretCol; ++i) {
+      char c = (i - 1 < (int)src.size()) ? src[i - 1] : ' ';
+      if (c == '\t') fputc('\t', stderr);
+      else fputc(' ', stderr);
+    }
+    fputc('^', stderr);
+    fputc('\n', stderr);
+  }
+}
+
+// Same, but driven from an AST node
+static void printErrorAtNode(const ASTnode *node, const char *msg) {
+  if (node) {
+    int line = node->getLine();
+    int col  = node->getCol();
+    if (line > 0 && col > 0) {
+      printErrorAtLocation(line, col, msg);
+      return;
+    }
+  }
+  // Fallback if node has no location
+  printErrorAtCurrent(msg);
+}
+
+static void reportNodeError(const ASTnode* node, const char* msg) {
+  if (node) {
+    int line = node->getLine();
+    int col  = node->getCol();
+    if (line > 0 && col > 0) {
+      TOKEN fake;
+      fake.type     = INVALID;
+      fake.lexeme   = "";
+      fake.lineNo   = line;
+      fake.columnNo = col;
+      printErrorAt(fake, msg);
+      exit(2);
+    }
+  }
+
+  // Fallback if node has no usable location
+  fprintf(stderr, "error: %s\n", msg);
+  exit(2);
+}
+
 
 //===----------------------------------------------------------------------===//
 // Recursive Descent - Function call for each production
@@ -1203,24 +1362,31 @@ static std::vector<std::unique_ptr<ASTnode>> ParseArrayIndices() {
 
 
 // -------- primary --------
-// primary ::= '(' expr ')' | IDENT | IDENT '(' args ')' | INT_LIT | FLOAT_LIT | BOOL_LIT
+
+// primary ::= '(' expr ')' 
+//          | IDENT 
+//          | IDENT '(' args ')' 
+//          | IDENT '[' expr ']' ...   (1–3 dims)
+//          | INT_LIT | FLOAT_LIT | BOOL_LIT
 static std::unique_ptr<ASTnode> ParsePrimary() {
   switch (CurTok.type) {
     case LPAR: {
       getNextToken(); // eat '('
       auto inner = ParseExper();
       if (!inner) return nullptr;
-      if (CurTok.type != RPAR) return LogError(CurTok, "expected ')'");
+      if (CurTok.type != RPAR)
+        return LogError(CurTok, "expected ')'");
       getNextToken(); // eat ')'
       return inner;
     }
+
     case IDENT: {
       TOKEN identTok = CurTok;
       std::string name = identTok.getIdentifierStr();
       getNextToken(); // eat IDENT
 
+      // function call: name(...)
       if (CurTok.type == LPAR) {
-        // function call
         getNextToken(); // eat '('
         std::vector<std::unique_ptr<ASTnode>> args;
         ParseArgs(args);
@@ -1230,29 +1396,34 @@ static std::unique_ptr<ASTnode> ParsePrimary() {
         return std::make_unique<CallExprAST>(name, std::move(args));
       }
 
-      // NEW: array element access at same precedence as a call
+      // array element access: name[...][...]...
       if (CurTok.type == LBOX) {
         auto indices = ParseArrayIndices();
         if (indices.empty()) {
           return LogError(CurTok, "array access needs at least one index");
         }
-        return std::make_unique<ArrayAccessAST>(name, std::move(indices));
+        return std::make_unique<ArrayAccessAST>(identTok, name,
+                                                std::move(indices));
       }
 
-      // variable reference
+      // plain variable
       return std::make_unique<VariableASTnode>(identTok, name);
     }
 
     case INT_LIT:
       return ParseIntNumberExpr();
+
     case FLOAT_LIT:
       return ParseFloatNumberExpr();
+
     case BOOL_LIT:
       return ParseBoolExpr();
+
     default:
       return LogError(CurTok, "expected primary expression");
   }
 }
+
 
 // -------- unary --------
 // unary ::= '-' unary | '!' unary | primary
@@ -1669,7 +1840,13 @@ static std::unique_ptr<ASTnode> ParseStmt() {
 
 // stmt_list ::= stmt stmt_list_prime
 static std::vector<std::unique_ptr<ASTnode>> ParseStmtList() {
-  std::vector<std::unique_ptr<ASTnode>> stmt_list; // vector of statements
+  std::vector<std::unique_ptr<ASTnode>> stmt_list;
+
+  // Allow empty statement list: block can be "{}"
+  if (CurTok.type == RBRA) {
+    return stmt_list;
+  }
+
   auto stmt = ParseStmt();
   if (stmt) {
     stmt_list.push_back(std::move(stmt));
@@ -1680,6 +1857,7 @@ static std::vector<std::unique_ptr<ASTnode>> ParseStmtList() {
   }
   return stmt_list;
 }
+
 
 // stmt_list_prime ::= stmt stmt_list_prime
 //                  |  ε
@@ -1806,60 +1984,66 @@ static std::unique_ptr<ASTnode> ParseArrayAssignStmt() {
 
 
 // local_decl ::= var_type IDENT ";"
-// var_type ::= "int"
-//           |  "float"
-//           |  "bool"
-// local_decl ::= var_type IDENT ";"
 //              | var_type IDENT array_suffix ";"
 static std::unique_ptr<VarDeclAST> ParseLocalDecl() {
-  TOKEN PrevTok;
+  TOKEN typeTok;
   std::string Type;
-  std::string Name = "";
+  std::string Name;
   std::unique_ptr<VarDeclAST> local_decl;
 
-  if (CurTok.type == INT_TOK || CurTok.type == FLOAT_TOK ||
-      CurTok.type == BOOL_TOK) { // FIRST(var_type)
-    PrevTok = CurTok;
-    getNextToken(); // eat 'int' or 'float' or 'bool'
+  if (CurTok.type == INT_TOK || CurTok.type == FLOAT_TOK || CurTok.type == BOOL_TOK) {
+    typeTok = CurTok;          // remember type token
+    getNextToken();            // eat 'int' / 'float' / 'bool'
 
     if (CurTok.type != IDENT) {
       LogError(CurTok, "expected identifier in local variable declaration");
       return nullptr;
     }
 
-    Type = PrevTok.lexeme;
+    Type = typeTok.lexeme;     // "int", "float", "bool"
     Name = CurTok.getIdentifierStr();
-    auto ident = std::make_unique<VariableASTnode>(CurTok, Name);
-    getNextToken(); // eat IDENT
+    TOKEN identTok = CurTok;   // for precise error location
+    auto ident = std::make_unique<VariableASTnode>(identTok, Name);
+    getNextToken();            // eat IDENT
 
-    // NEW: check for array suffix
-    if ((PrevTok.type == INT_TOK || PrevTok.type == FLOAT_TOK) &&
+    // Optional array suffix, only for int/float
+    if ((typeTok.type == INT_TOK || typeTok.type == FLOAT_TOK) &&
         CurTok.type == LBOX) {
 
       auto dims = ParseArrayDimsDecl(); // one to three INT_LIT dims
 
       if (CurTok.type != SC) {
-        LogError(CurTok, "expected ';' after array declaration");
+        LogError(identTok, "expected ';' after array declaration");
         return nullptr;
       }
       getNextToken(); // eat ';'
 
       fprintf(stderr, "Parsed a local array declaration\n");
-      local_decl = std::make_unique<ArrayDeclAST>(std::move(ident), Type,
-                                                  std::move(dims));
+      local_decl = std::make_unique<ArrayDeclAST>(
+          std::move(ident),
+          Type,
+          std::move(dims));
     } else {
-      // regular variable as before
+      // Scalar local
       if (CurTok.type != SC) {
-        LogError(CurTok, "Expected ';' to end local variable declaration");
+        LogError(identTok, "Expected ';' to end local variable declaration");
         return nullptr;
       }
       getNextToken(); // eat ';'
+
       fprintf(stderr, "Parsed a local variable declaration\n");
-      local_decl = std::make_unique<VarDeclAST>(std::move(ident), Type);
+      local_decl = std::make_unique<VarDeclAST>(
+          std::move(ident),
+          Type);
     }
+  } else {
+    LogError(CurTok, "expected 'int', 'float' or 'bool' in local declaration");
+    return nullptr;
   }
+
   return local_decl;
 }
+
 
 
 // local_decls ::= local_decl local_decls_prime
@@ -1883,14 +2067,12 @@ static std::vector<std::unique_ptr<VarDeclAST>> ParseLocalDecls() {
              CurTok.type == INT_LIT || CurTok.type == RETURN ||
              CurTok.type == FLOAT_LIT || CurTok.type == BOOL_LIT ||
              CurTok.type == COMMA || CurTok.type == LBRA || CurTok.type == IF ||
-             CurTok.type == WHILE) { // FOLLOW(local_decls)
-                                     // do nothing
+             CurTok.type == WHILE || CurTok.type == RBRA) { // FOLLOW(local_decls)
+    // do nothing
   } else {
-    LogError(
-        CurTok,
-        "expected '-', '!', '(' , IDENT , STRING_LIT , INT_LIT , FLOAT_LIT, \
-        BOOL_LIT, ';', '{', 'if', 'while', 'return'");
+    LogError(CurTok, "unexpected token after local variable declaration");
   }
+
 
   return local_decls;
 }
@@ -2475,20 +2657,391 @@ Value* VarDeclAST::codegen() {
 }
 
 
+// ================== Array helpers (index + GEP) ==================
+
+// Codegen one index expr and enforce exact int type
+static Value* codegenCheckedIndex(ASTnode* idxNode,
+                                  const std::string &arrayName) {
+  Value *idxV = idxNode->codegen();
+  if (!idxV) return nullptr;
+
+  Type *idxTy = idxV->getType();
+  if (!isIntTy(idxTy)) {
+    std::string msg = "array index for '" + arrayName + "' must be int";
+    printCodegenErrorAtNode(idxNode, msg.c_str());
+    exit(2);
+  }
+  return idxV;
+}
+
+
+// name         : array name for error text
+// localAlloca  : non-null for locals, null for globals
+// basePtr      : alloca or global
+// baseTy       : full ArrayType for the variable
+// indices      : AST index expressions
+// elemPtr      : out, pointer to element
+// elemTy       : out, element type
+static void computeArrayVarElementPtr(
+    const std::string &name,
+    AllocaInst *localAlloca,
+    Value *basePtr,
+    Type *baseTy,
+    const std::vector<std::unique_ptr<ASTnode>> &indices,
+    Value *&elemPtr,
+    Type *&elemTy) {
+
+  if (indices.empty()) {
+    std::string msg = "array access on '" + name + "' needs at least one index";
+    printErrorAtCurrent(msg.c_str());
+    exit(2);
+  }
+
+  auto *arrTy = dyn_cast<ArrayType>(baseTy);
+  if (!arrTy) {
+    fprintf(stderr, "Internal error: '%s' is not an array type\n",
+            name.c_str());
+    exit(2);
+  }
+
+  std::vector<Value*> idxList;
+  idxList.push_back(ConstantInt::get(getIntTy(), 0));
+
+  Type *curTy = baseTy;
+
+  for (size_t i = 0; i < indices.size(); ++i) {
+    if (!isa<ArrayType>(curTy)) {
+      std::string msg =
+        "too many indices supplied for array '" + name + "'";
+      printErrorAtNode(indices[i].get(), msg.c_str());
+      exit(2);
+    }
+
+    Value *idxV = indices[i]->codegen();
+    if (!idxV) {
+      fprintf(stderr, "Internal error: null index codegen for '%s'\n",
+              name.c_str());
+      exit(2);
+    }
+
+    Type *idxTy = idxV->getType();
+    if (!isIntTy(idxTy)) {
+      std::string msg =
+        "array index for '" + name + "' must be int";
+      printErrorAtNode(indices[i].get(), msg.c_str());
+      exit(2);
+    }
+
+    idxList.push_back(idxV);
+    curTy = cast<ArrayType>(curTy)->getElementType();
+  }
+
+  if (isa<ArrayType>(curTy)) {
+    std::string msg =
+      "too few indices supplied for array '" + name + "'";
+    // use last index node for location, closest to error
+    printErrorAtNode(indices.back().get(), msg.c_str());
+    exit(2);
+  }
+
+  elemTy = curTy;
+
+  if (localAlloca) {
+    elemPtr = Builder.CreateInBoundsGEP(
+        baseTy,
+        localAlloca,
+        idxList,
+        name + "_elem_ptr");
+  } else {
+    elemPtr = Builder.CreateInBoundsGEP(
+        baseTy,
+        basePtr,
+        idxList,
+        name + "_elem_ptr");
+  }
+}
+
+
+// name       : parameter name, used as key in ArrayParamInfo
+// ptrVal     : pointer value loaded from alloca or global
+// metaElemTy : ArrayParamInfo[name].ElemTy
+// indices    : AST index expressions
+// elemPtr    : out, pointer to element
+// elemTy     : out, element type
+static void computePointerParamElementPtr(
+    const std::string &name,
+    Value *ptrVal,
+    Type *metaElemTy,
+    const std::vector<std::unique_ptr<ASTnode>> &indices,
+    Value *&elemPtr,
+    Type *&elemTy) {
+
+  if (indices.empty()) {
+    std::string msg =
+      "array access on '" + name + "' needs at least one index";
+    printErrorAtCurrent(msg.c_str());
+    exit(2);
+  }
+
+  // 1D pointer parameter: elemTy is scalar
+  if (!isa<ArrayType>(metaElemTy)) {
+    if (indices.size() != 1) {
+      std::string msg =
+        "too many indices for 1D pointer '" + name + "'";
+      printErrorAtNode(indices[1 < indices.size() ? 1 : 0].get(),
+                       msg.c_str());
+      exit(2);
+    }
+
+    Value *idxV = indices[0]->codegen();
+    if (!idxV) {
+      fprintf(stderr, "Internal error: null index codegen for '%s'\n",
+              name.c_str());
+      exit(2);
+    }
+
+    if (!isIntTy(idxV->getType())) {
+      std::string msg =
+        "array index for '" + name + "' must be int";
+      printErrorAtNode(indices[0].get(), msg.c_str());
+      exit(2);
+    }
+
+    elemTy = metaElemTy;
+
+    elemPtr = Builder.CreateInBoundsGEP(
+        metaElemTy,
+        ptrVal,
+        std::vector<Value*>{ idxV },
+        name + "_elem_ptr");
+    return;
+  }
+
+  // Pointer parameter for 2D or 3D arrays.
+  Type *curElemTy = metaElemTy;
+  std::vector<Value*> gepIdx;
+
+  // First index selects which array in parameter
+  Value *firstIdx = indices[0]->codegen();
+  if (!firstIdx) {
+    fprintf(stderr, "Internal error: null index codegen for '%s'\n",
+            name.c_str());
+    exit(2);
+  }
+  if (!isIntTy(firstIdx->getType())) {
+    std::string msg =
+      "array index for '" + name + "' must be int";
+    printErrorAtNode(indices[0].get(), msg.c_str());
+    exit(2);
+  }
+  gepIdx.push_back(firstIdx);
+
+  for (size_t i = 1; i < indices.size(); ++i) {
+    if (!isa<ArrayType>(curElemTy)) {
+      std::string msg =
+        "too many indices for pointer-to-array '" + name + "'";
+      printErrorAtNode(indices[i].get(), msg.c_str());
+      exit(2);
+    }
+
+    Value *idxV = indices[i]->codegen();
+    if (!idxV) {
+      fprintf(stderr, "Internal error: null index codegen for '%s'\n",
+              name.c_str());
+      exit(2);
+    }
+
+    if (!isIntTy(idxV->getType())) {
+      std::string msg =
+        "array index for '" + name + "' must be int";
+      printErrorAtNode(indices[i].get(), msg.c_str());
+      exit(2);
+    }
+
+    gepIdx.push_back(idxV);
+    curElemTy = cast<ArrayType>(curElemTy)->getElementType();
+  }
+
+  if (isa<ArrayType>(curElemTy)) {
+    std::string msg =
+      "too few indices for pointer-to-array '" + name + "'";
+    printErrorAtNode(indices.back().get(), msg.c_str());
+    exit(2);
+  }
+
+  elemTy = curElemTy;
+
+  elemPtr = Builder.CreateInBoundsGEP(
+      metaElemTy,
+      ptrVal,
+      gepIdx,
+      name + "_elem_ptr");
+}
+
+
+
+Value* ArrayAccessAST::codegen() {
+  Value *basePtr = nullptr;
+  Type  *baseTy  = nullptr;
+  AllocaInst *localAlloca = nullptr;
+
+  if (AllocaInst *local = lookupLocal(name)) {
+    basePtr = local;
+    baseTy  = local->getAllocatedType();
+    localAlloca = local;
+  } else if (GlobalVariable *global = lookupGlobal(name)) {
+    basePtr = global;
+    baseTy  = global->getValueType();
+  } else {
+    std::string msg = "Unknown array '" + name + "'";
+    printErrorAtNode(this, msg.c_str());
+    exit(2);
+  }
+
+
+  // Case 1: true array variable
+  if (isa<ArrayType>(baseTy)) {
+    Value *elemPtr = nullptr;
+    Type  *elemTy  = nullptr;
+
+    computeArrayVarElementPtr(
+        name, localAlloca, basePtr, baseTy, indices, elemPtr, elemTy);
+
+    return Builder.CreateLoad(elemTy, elemPtr, name + "_elem");
+  }
+
+  // Case 2: pointer-style array parameter
+  if (auto *ptrTy = dyn_cast<PointerType>(baseTy)) {
+    Value *ptrVal = nullptr;
+    if (localAlloca) {
+      ptrVal = Builder.CreateLoad(ptrTy, localAlloca, name + "_ptr");
+    } else {
+      ptrVal = basePtr;
+    }
+
+    auto metaIt = ArrayParamInfo.find(name);
+    if (metaIt == ArrayParamInfo.end()) {
+      fprintf(stderr,
+              "Pointer variable '%s' used in array access is not a known array parameter\n",
+              name.c_str());
+      exit(2);
+    }
+    Type *metaElemTy = metaIt->second.ElemTy;
+
+    Value *elemPtr = nullptr;
+    Type  *elemTy  = nullptr;
+
+    computePointerParamElementPtr(
+        name, ptrVal, metaElemTy, indices, elemPtr, elemTy);
+
+    return Builder.CreateLoad(elemTy, elemPtr, name + "_elem");
+  }
+
+  fprintf(stderr, "'%s' is not an array or pointer value\n", name.c_str());
+  exit(2);
+}
+
+
+Value* ArrayAssignAST::codegen() {
+  ArrayAccessAST *lhs = getLHS();
+  const std::string &name = lhs->getName();
+  const auto &indices = lhs->getIndices();
+
+  Value *basePtr = nullptr;
+  Type  *baseTy  = nullptr;
+  AllocaInst *localAlloca = nullptr;
+
+  if (AllocaInst *local = lookupLocal(name)) {
+    basePtr = local;
+    baseTy  = local->getAllocatedType();
+    localAlloca = local;
+  } else if (GlobalVariable *global = lookupGlobal(name)) {
+    basePtr = global;
+    baseTy  = global->getValueType();
+  } else {
+    std::string msg = "Unknown array '" + name + "' in assignment";
+    printErrorAtNode(lhs, msg.c_str());
+    exit(2);
+  }
+
+
+
+  Value *elemPtr = nullptr;
+  Type  *elemTy  = nullptr;
+
+  if (isa<ArrayType>(baseTy)) {
+    computeArrayVarElementPtr(
+        name, localAlloca, basePtr, baseTy, indices, elemPtr, elemTy);
+  } else if (auto *ptrTy = dyn_cast<PointerType>(baseTy)) {
+    Value *ptrVal = nullptr;
+    if (localAlloca) {
+      ptrVal = Builder.CreateLoad(ptrTy, localAlloca, name + "_ptr");
+    } else {
+      ptrVal = basePtr;
+    }
+
+    auto metaIt = ArrayParamInfo.find(name);
+    if (metaIt == ArrayParamInfo.end()) {
+      fprintf(stderr,
+              "Pointer variable '%s' used in array assignment is not a known array parameter\n",
+              name.c_str());
+      exit(2);
+    }
+    Type *metaElemTy = metaIt->second.ElemTy;
+
+    computePointerParamElementPtr(
+        name, ptrVal, metaElemTy, indices, elemPtr, elemTy);
+  } else {
+    std::string msg = "'" + name + "' is not an array or pointer in assignment";
+    printErrorAtNode(lhs, msg.c_str());
+    exit(2);
+  }
+
+
+  // RHS with widening only
+  Value *rhs = getRHS()->codegen();
+  if (!rhs) return nullptr;
+
+  Type* srcTy = rhs->getType();
+  if (srcTy != elemTy) {
+    if (!isWideningType(srcTy, elemTy)) {
+      std::string msg =
+        "illegal narrowing in array assignment to '" + name + "'";
+      printErrorAtNode(getRHS(), msg.c_str());
+      errs() << "  element type: "; elemTy->print(errs());
+      errs() << "\n  value type:   "; srcTy->print(errs());
+      errs() << "\n";
+      exit(2);
+    }
+    rhs = castTo(elemTy, rhs, "arrayassign");
+  }
+
+
+  Builder.CreateStore(rhs, elemPtr);
+  return rhs;
+}
+
+
+//================== Array declaration codegen ==================
+
+
+// Key function for vtable
+ArrayDeclAST::~ArrayDeclAST() = default;
+
 Value* ArrayDeclAST::codegen() {
-  const std::string& name = getName();
-  Type* elemTy = typeFromString(getType());
-  const std::vector<int>& dims = getDims();
+  const std::string &name = getName();
+  Type *elemTy = typeFromString(getType());
+  const std::vector<int> &dims = getDims();
 
   if (dims.empty()) {
     fprintf(stderr, "Array '%s' has no dimensions\n", name.c_str());
     exit(2);
   }
 
-  Type* arrTy = buildArrayType(elemTy, dims);
+  Type *arrTy = buildArrayType(elemTy, dims);
 
-  BasicBlock* curBB = Builder.GetInsertBlock();
-  Function* F = curBB ? curBB->getParent() : nullptr;
+  BasicBlock *curBB = Builder.GetInsertBlock();
+  Function *F = curBB ? curBB->getParent() : nullptr;
 
   // Global array
   if (!F) {
@@ -2503,8 +3056,8 @@ Value* ArrayDeclAST::codegen() {
       exit(2);
     }
 
-    Constant* init = ConstantAggregateZero::get(arrTy);
-    auto* G = new GlobalVariable(
+    Constant *init = ConstantAggregateZero::get(arrTy);
+    auto *G = new GlobalVariable(
         *TheModule,
         arrTy,
         /*isConstant=*/false,
@@ -2522,329 +3075,10 @@ Value* ArrayDeclAST::codegen() {
     exit(2);
   }
 
-  AllocaInst* slot = CreateEntryAlloca(F, name, arrTy);
+  AllocaInst *slot = CreateEntryAlloca(F, name, arrTy);
   Builder.CreateStore(ConstantAggregateZero::get(arrTy), slot);
   NamedValues[name] = slot;
   return slot;
-}
-
-Value* ArrayAccessAST::codegen() {
-  Value* basePtr = nullptr;
-  Type*  baseTy  = nullptr;
-  AllocaInst* localAlloca = nullptr;
-
-  if (AllocaInst* local = lookupLocal(name)) {
-    basePtr = local;
-    baseTy  = local->getAllocatedType();
-    localAlloca = local;
-  } else if (GlobalVariable* global = lookupGlobal(name)) {
-    basePtr = global;
-    baseTy  = global->getValueType();
-  } else {
-    fprintf(stderr, "Unknown array '%s'\n", name.c_str());
-    exit(2);
-  }
-
-  // Case 1: true array variable (local or global) with ArrayType
-  if (auto* arrTy = dyn_cast<ArrayType>(baseTy)) {
-    std::vector<Value*> idxList;
-    idxList.push_back(ConstantInt::get(getIntTy(), 0)); // first index
-
-    Type* curTy = baseTy;
-    for (size_t i = 0; i < indices.size(); ++i) {
-      if (!isa<ArrayType>(curTy)) {
-        fprintf(stderr, "Too many indices supplied for array '%s'\n",
-                name.c_str());
-        exit(2);
-      }
-
-      Value* idxV = indices[i]->codegen();
-      if (!idxV) return nullptr;
-      idxV = castTo(getIntTy(), idxV, "arrayidx");
-      idxList.push_back(idxV);
-
-      curTy = cast<ArrayType>(curTy)->getElementType();
-    }
-
-    if (isa<ArrayType>(curTy)) {
-      fprintf(stderr, "Too few indices supplied for array '%s'\n",
-              name.c_str());
-      exit(2);
-    }
-
-    Value* elemPtr = nullptr;
-    if (localAlloca) {
-      elemPtr = Builder.CreateInBoundsGEP(baseTy, localAlloca, idxList,
-                                          name + "_elem_ptr");
-    } else {
-      elemPtr = Builder.CreateInBoundsGEP(baseTy, basePtr, idxList,
-                                          name + "_elem_ptr");
-    }
-
-    return Builder.CreateLoad(curTy, elemPtr, name + "_elem");
-  }
-
-  // Case 2: pointer-style array (e.g. function parameter int a[10])
-  if (auto* ptrTy = dyn_cast<PointerType>(baseTy)) {
-    Value* ptrVal = nullptr;
-    if (localAlloca) {
-      ptrVal = Builder.CreateLoad(ptrTy, localAlloca, name + "_ptr");
-    } else {
-      ptrVal = basePtr; // pointer global, rare but possible
-    }
-
-    auto metaIt = ArrayParamInfo.find(name);
-    if (metaIt == ArrayParamInfo.end()) {
-      fprintf(stderr,
-              "Pointer variable '%s' used in array access is not a known array parameter\n",
-              name.c_str());
-      exit(2);
-    }
-    Type* elemTy = metaIt->second.ElemTy;
-
-    if (indices.empty()) {
-      fprintf(stderr, "Array access on '%s' needs at least one index\n",
-              name.c_str());
-      exit(2);
-    }
-
-    // Simple 1D: elemTy is not an ArrayType, a[i]
-    if (!isa<ArrayType>(elemTy)) {
-      if (indices.size() != 1) {
-        fprintf(stderr, "Too many indices for 1D pointer '%s'\n",
-                name.c_str());
-        exit(2);
-      }
-
-      Value* idxV = indices[0]->codegen();
-      if (!idxV) return nullptr;
-      idxV = castTo(getIntTy(), idxV, "arrayidx");
-
-      Value* elemPtr = Builder.CreateInBoundsGEP(
-          elemTy,
-          ptrVal,
-          std::vector<Value*>{ idxV },
-          name + "_elem_ptr");
-
-      return Builder.CreateLoad(elemTy, elemPtr, name + "_elem");
-    }
-
-    // Pointer to array-of-... for 2D/3D parameters
-    Type* curElemTy = elemTy;
-    std::vector<Value*> gepIdx;
-
-    // First index selects which array in the parameter
-    Value* firstIdx = indices[0]->codegen();
-    if (!firstIdx) return nullptr;
-    firstIdx = castTo(getIntTy(), firstIdx, "arrayidx");
-    gepIdx.push_back(firstIdx);
-
-    // Remaining indices drill inside nested arrays
-    for (size_t i = 1; i < indices.size(); ++i) {
-      if (!isa<ArrayType>(curElemTy)) {
-        fprintf(stderr, "Too many indices for pointer-to-array '%s'\n",
-                name.c_str());
-        exit(2);
-      }
-
-      Value* idxV = indices[i]->codegen();
-      if (!idxV) return nullptr;
-      idxV = castTo(getIntTy(), idxV, "arrayidx");
-      gepIdx.push_back(idxV);
-
-      curElemTy = cast<ArrayType>(curElemTy)->getElementType();
-    }
-
-    if (isa<ArrayType>(curElemTy)) {
-      fprintf(stderr, "Too few indices for pointer-to-array '%s'\n",
-              name.c_str());
-      exit(2);
-    }
-
-    Value* elemPtr = Builder.CreateInBoundsGEP(
-        elemTy,
-        ptrVal,
-        gepIdx,
-        name + "_elem_ptr");
-
-    return Builder.CreateLoad(curElemTy, elemPtr, name + "_elem");
-  }
-
-  fprintf(stderr, "'%s' is not an array or pointer value\n", name.c_str());
-  exit(2);
-}
-
-
-Value* ArrayAssignAST::codegen() {
-  ArrayAccessAST* lhs = getLHS();
-  const std::string &name = lhs->getName();
-  const auto &indices = lhs->getIndices();
-
-  // Find base symbol
-  Value* basePtr = nullptr;
-  Type*  baseTy  = nullptr;
-  AllocaInst* localAlloca = nullptr;
-
-  if (AllocaInst* local = lookupLocal(name)) {
-    basePtr = local;
-    baseTy  = local->getAllocatedType();
-    localAlloca = local;
-  } else if (GlobalVariable* global = lookupGlobal(name)) {
-    basePtr = global;
-    baseTy  = global->getValueType();
-  } else {
-    fprintf(stderr, "Unknown array '%s' in assignment\n", name.c_str());
-    exit(2);
-  }
-
-  Value* elemPtr = nullptr;
-  Type*  elemTy  = nullptr;
-
-  // Case 1: true ArrayType
-  if (auto* arrTy = dyn_cast<ArrayType>(baseTy)) {
-    std::vector<Value*> idxList;
-    idxList.push_back(ConstantInt::get(getIntTy(), 0));
-
-    Type* curTy = baseTy;
-    for (size_t i = 0; i < indices.size(); ++i) {
-      if (!isa<ArrayType>(curTy)) {
-        fprintf(stderr, "Too many indices for array '%s' in assignment\n",
-                name.c_str());
-        exit(2);
-      }
-
-      Value* idxV = indices[i]->codegen();
-      if (!idxV) return nullptr;
-      idxV = castTo(getIntTy(), idxV, "arrayidx");
-      idxList.push_back(idxV);
-
-      curTy = cast<ArrayType>(curTy)->getElementType();
-    }
-
-    if (isa<ArrayType>(curTy)) {
-      fprintf(stderr, "Too few indices for array '%s' in assignment\n",
-              name.c_str());
-      exit(2);
-    }
-
-    elemTy = curTy;
-
-    if (localAlloca) {
-      elemPtr = Builder.CreateInBoundsGEP(baseTy, localAlloca, idxList,
-                                          name + "_elem_ptr");
-    } else {
-      elemPtr = Builder.CreateInBoundsGEP(baseTy, basePtr, idxList,
-                                          name + "_elem_ptr");
-    }
-  }
-
-  // Case 2: pointer-style parameter
-  else if (auto* ptrTy = dyn_cast<PointerType>(baseTy)) {
-    Value* ptrVal = nullptr;
-    if (localAlloca) {
-      ptrVal = Builder.CreateLoad(ptrTy, localAlloca, name + "_ptr");
-    } else {
-      ptrVal = basePtr;
-    }
-
-    auto metaIt = ArrayParamInfo.find(name);
-    if (metaIt == ArrayParamInfo.end()) {
-      fprintf(stderr,
-              "Pointer variable '%s' used in array assignment is not a known array parameter\n",
-              name.c_str());
-      exit(2);
-    }
-    Type* innerTy = metaIt->second.ElemTy;
-
-    if (indices.empty()) {
-      fprintf(stderr, "Array assignment to '%s' needs at least one index\n",
-              name.c_str());
-      exit(2);
-    }
-
-    if (!isa<ArrayType>(innerTy)) {
-      // 1D pointer parameter
-      if (indices.size() != 1) {
-        fprintf(stderr, "Too many indices for 1D pointer '%s' in assignment\n",
-                name.c_str());
-        exit(2);
-      }
-
-      Value* idxV = indices[0]->codegen();
-      if (!idxV) return nullptr;
-      idxV = castTo(getIntTy(), idxV, "arrayidx");
-
-      elemTy = innerTy;
-      elemPtr = Builder.CreateInBoundsGEP(
-          innerTy,
-          ptrVal,
-          std::vector<Value*>{ idxV },
-          name + "_elem_ptr");
-    } else {
-      // Pointer to array-of-... parameter
-      Type* curElemTy = innerTy;
-      std::vector<Value*> gepIdx;
-
-      Value* firstIdx = indices[0]->codegen();
-      if (!firstIdx) return nullptr;
-      firstIdx = castTo(getIntTy(), firstIdx, "arrayidx");
-      gepIdx.push_back(firstIdx);
-
-      for (size_t i = 1; i < indices.size(); ++i) {
-        if (!isa<ArrayType>(curElemTy)) {
-          fprintf(stderr, "Too many indices for pointer-to-array '%s'\n",
-                  name.c_str());
-          exit(2);
-        }
-
-        Value* idxV = indices[i]->codegen();
-        if (!idxV) return nullptr;
-        idxV = castTo(getIntTy(), idxV, "arrayidx");
-        gepIdx.push_back(idxV);
-
-        curElemTy = cast<ArrayType>(curElemTy)->getElementType();
-      }
-
-      if (isa<ArrayType>(curElemTy)) {
-        fprintf(stderr, "Too few indices for pointer-to-array '%s'\n",
-                name.c_str());
-        exit(2);
-      }
-
-      elemTy = curElemTy;
-      elemPtr = Builder.CreateInBoundsGEP(
-          innerTy,
-          ptrVal,
-          gepIdx,
-          name + "_elem_ptr");
-    }
-  }
-
-  else {
-    fprintf(stderr, "'%s' is not an array or pointer in assignment\n",
-            name.c_str());
-    exit(2);
-  }
-
-  // RHS value, with widening only
-  Value* rhs = getRHS()->codegen();
-  if (!rhs) return nullptr;
-
-  Type* srcTy = rhs->getType();
-  if (srcTy != elemTy) {
-    if (!isWideningType(srcTy, elemTy)) {
-      fprintf(stderr, "Illegal narrowing in array assignment to '%s'\n",
-              name.c_str());
-      errs() << "  element type: "; elemTy->print(errs());
-      errs() << "\n  value type:   "; srcTy->print(errs());
-      errs() << "\n";
-      exit(2);
-    }
-    rhs = castTo(elemTy, rhs, "arrayassign");
-  }
-
-  Builder.CreateStore(rhs, elemPtr);
-  return rhs;
 }
 
 
@@ -2857,10 +3091,14 @@ Value* BinaryExprAST::codegen() {
 
   Type* lhs_type = lhs->getType();
   Type* rhs_type = rhs->getType();
+
+  // Remember original bool-ness before promotion
+  bool lhsWasBool = isBoolTy(lhs_type);
+  bool rhsWasBool = isBoolTy(rhs_type);
+
   Type* common_type = getCommonType(lhs_type, rhs_type);
 
   int op = getOpTok();
-
   // Logical operators: force both sides to bool first
   if (op == AND || op == OR) {
     lhs = castTo(miniCBoolTy(), lhs, "logical lhs");
@@ -2885,37 +3123,52 @@ Value* BinaryExprAST::codegen() {
     case PLUS:
       if (useFloat)   return Builder.CreateFAdd(lhs, rhs, "addtmp");
       if (useIntLike) return Builder.CreateAdd(lhs, rhs, "addtmp");
-      fprintf(stderr, "Error: invalid types for '+'\n");
+      printErrorAtNode(getLHS(), "invalid operand types for '+'");
       exit(2);
+
 
     case MINUS:
       if (useFloat)   return Builder.CreateFSub(lhs, rhs, "subtmp");
       if (useIntLike) return Builder.CreateSub(lhs, rhs, "subtmp");
-      fprintf(stderr, "Error: invalid types for '-'\n");
+      printErrorAtNode(getLHS(), "invalid operand types for '-'");
       exit(2);
 
     case ASTERIX:
       if (useFloat)   return Builder.CreateFMul(lhs, rhs, "multmp");
       if (useIntLike) return Builder.CreateMul(lhs, rhs, "multmp");
-      fprintf(stderr, "Error: invalid types for '*'\n");
+      printErrorAtNode(getLHS(), "invalid operand types for '*'");
       exit(2);
 
     case DIV:
       if (useFloat)   return Builder.CreateFDiv(lhs, rhs, "divtmp");
       if (useIntLike) return Builder.CreateSDiv(lhs, rhs, "divtmp");
-      fprintf(stderr, "Error: invalid types for '/'\n");
+      printErrorAtNode(getLHS(), "invalid operand types for '/'");
       exit(2);
 
     case MOD:
+      // still forbid float %
       if (useFloat) {
-        fprintf(stderr, "Error: '%%' not defined for float\n");
+        printErrorAtNode(getLHS(),
+                         "'%' not defined for float operands");
         exit(2);
       }
+
+      // new: forbid bool involvement in '%'
+      if (lhsWasBool || rhsWasBool) {
+        printErrorAtNode(getLHS(),
+                         "'%' not defined for bool operands");
+        exit(2);
+      }
+
       if (useIntLike) {
         return Builder.CreateSRem(lhs, rhs, "modtmp");
       }
-      fprintf(stderr, "Error: invalid types for '%%'\n");
+
+      printErrorAtNode(getLHS(),
+                       "invalid operand types for '%'");
       exit(2);
+
+
 
 
     // ── comparisons (return i1) ────────
@@ -2946,13 +3199,13 @@ Value* BinaryExprAST::codegen() {
     case EQ:
       if (useFloat) return Builder.CreateFCmpOEQ(lhs, rhs, "cmptmp");
       if (useIntLike) return Builder.CreateICmpEQ(lhs, rhs, "cmptmp");
-      fprintf(stderr, "Error: invalid types for '=='\n");
+      printErrorAtNode(getLHS(), "invalid operand types for '=='");
       exit(2);
 
     case NE:
       if (useFloat) return Builder.CreateFCmpONE(lhs, rhs, "cmptmp");
       if (useIntLike) return Builder.CreateICmpNE(lhs, rhs, "cmptmp");
-      fprintf(stderr, "Error: invalid types for '!='\n");
+      printErrorAtNode(getLHS(), "invalid operand types for '!='");
       exit(2);
 
     default:
@@ -3152,8 +3405,9 @@ Value* CallExprAST::codegen() {
     Type* srcTy = argVal->getType();
     if (srcTy != paramTy) {
       if (!isWideningType(srcTy, paramTy)) {
-        fprintf(stderr, "Illegal narrowing in call to '%s' for argument %u\n",
-                Callee.c_str(), idx);
+        std::string msg = "illegal narrowing in call to '" + Callee +
+                          "' for argument " + std::to_string(idx);
+        printErrorAtNode(argExpr.get(), msg.c_str());
         errs() << "  parameter type: "; paramTy->print(errs());
         errs() << "\n  argument type:  "; srcTy->print(errs());
         errs() << "\n";
@@ -3161,6 +3415,22 @@ Value* CallExprAST::codegen() {
       }
       argVal = castTo(paramTy, argVal, "callarg");
     }
+
+    // existing widening check
+    if (srcTy != paramTy) {
+        if (!isWideningType(srcTy, paramTy)) {
+            std::string msg =
+                "illegal narrowing in call to '" + Callee +
+                "' for argument " + std::to_string(idx);
+            printErrorAtNode(argExpr.get(), msg.c_str());
+            errs() << "  parameter type: "; paramTy->print(errs());
+            errs() << "\n  argument type:  "; srcTy->print(errs());
+            errs() << "\n";
+            exit(2);
+        }
+        argVal = castTo(paramTy, argVal, "callarg");
+    }
+
 
     argValues.push_back(argVal);
     ++idx;
@@ -3300,7 +3570,7 @@ Value* ReturnAST::codegen() {
     // MINIC_RULE_RETURN_WIDENING
     if (srcTy != func_return_type) {
         if (!isWideningType(srcTy, func_return_type)) {
-            fprintf(stderr, "Illegal narrowing return type\n");
+            printErrorAtNode(Val.get(), "illegal narrowing return type");
             errs() << "  function return type: "; func_return_type->print(errs());
             errs() << "\n  expression type:      "; srcTy->print(errs());
             errs() << "\n";
@@ -3400,9 +3670,11 @@ Value* AssignAST::codegen() {
   GlobalVariable* global = lookupGlobal(name);
 
   if (!local && !global) {
-    fprintf(stderr, "Assignment to unknown variable '%s'\n", name.c_str());
+    std::string msg = "Assignment to unknown variable '" + name + "'";
+    printErrorAtNode(LHS.get(), msg.c_str());
     exit(2);
   }
+
 
   // pointer to storage and declared type
   Value* destPtr = nullptr;
@@ -3425,8 +3697,8 @@ Value* AssignAST::codegen() {
   // enforce widening only
   if (rhsTy != varTy) {
     if (!isWideningType(rhsTy, varTy)) {
-      fprintf(stderr, "Illegal narrowing in assignment to '%s'\n",
-              name.c_str());
+      std::string msg = "illegal narrowing in assignment to '" + name + "'";
+      printErrorAtNode(RHS.get(), msg.c_str());
       errs() << "  variable type: "; varTy->print(errs());
       errs() << "\n  value type:    "; rhsTy->print(errs());
       errs() << "\n";
@@ -3434,6 +3706,7 @@ Value* AssignAST::codegen() {
     }
     rhsV = castTo(varTy, rhsV, "assign");
   }
+
 
   Builder.CreateStore(rhsV, destPtr);
   return rhsV;
@@ -3564,8 +3837,25 @@ void ReturnAST::to_string_inner(std::string& out, int indent) const {
 // Main driver code.
 //===----------------------------------------------------------------------===//
 
+static void loadSourceFile(const char *filename) {
+  SourceLines.clear();
+  std::ifstream in(filename);
+  if (!in) {
+    // Fall back to old behaviour if reading fails
+    return;
+  }
+  std::string line;
+  while (std::getline(in, line)) {
+    SourceLines.push_back(line);
+  }
+}
+
+
 int main(int argc, char **argv) {
   if (argc == 2) {
+    // New: read whole file into memory for error snippets
+    loadSourceFile(argv[1]);
+
     pFile = fopen(argv[1], "r");
     if (pFile == NULL)
       perror("Error opening file");
@@ -3574,7 +3864,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  // initialize line number and column numbers to zero
+  // initialise line number and column numbers
   lineNo = 1;
   columnNo = 1;
 
