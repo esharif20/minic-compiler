@@ -1,0 +1,1715 @@
+==============================================
+         MiniC Error-Printing Test Suite       
+==============================================
+
+========== Running 10.c ==========
+Parsed parameter list for function
+Parsed a local variable declaration
+Parsed a set of local variable declaration
+Parsed an expression statement
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+line 4, column 9: error: illegal narrowing in assignment to 'x'
+    x = true + 2.3;
+        ^
+  variable type: i32
+  value type:    float
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+        VarDecl x : int
+      Stmts:
+        Assign
+          LHS:
+            Var(x)
+          RHS:
+            Binary(+)
+              LHS:
+                Bool(true)
+              RHS:
+                Float(2.300000)
+        Return
+          Val:
+            Int(0)
+
+[PASS]  Correctly reported an error and exited with status 2
+----------------------------------------------
+
+========== Running 11.c ==========
+Parsed parameter list for function
+Parsed a local variable declaration
+Parsed a set of local variable declaration
+Parsed an expression statement
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+        VarDecl x : float
+      Stmts:
+        Assign
+          LHS:
+            Var(x)
+          RHS:
+            Int(1)
+        Return
+          Val:
+            Int(0)
+
+********************* FINAL IR (begin) ****************************
+********************* FINAL IR (end) ******************************
+
+[PASS]  Accepted program with no errors
+----------------------------------------------
+
+========== Running 12.c ==========
+Parsed parameter list for function
+Parsed a set of local variable declaration
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsed parameter list for function
+Parsed a set of local variable declaration
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+line 2, column 18: error: illegal narrowing return type
+int f() { return 1.2; }
+                 ^
+  function return type: i32
+  expression type:      float
+Function f : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+      Stmts:
+        Return
+          Val:
+            Float(1.200000)
+
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+      Stmts:
+        Return
+          Val:
+            Call f
+
+[PASS]  Correctly reported an error and exited with status 2
+----------------------------------------------
+
+========== Running 13.c ==========
+Parsed parameter list for function
+Parsed a local variable declaration
+Parsed a set of local variable declaration
+Parsed an expression statement
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+line 4, column 9: error: '%' not defined for float operands
+    x = 1.0 % 2;
+        ^
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+        VarDecl x : float
+      Stmts:
+        Assign
+          LHS:
+            Var(x)
+          RHS:
+            Binary(%)
+              LHS:
+                Float(1.000000)
+              RHS:
+                Int(2)
+        Return
+          Val:
+            Int(0)
+
+[PASS]  Correctly reported an error and exited with status 2
+----------------------------------------------
+
+========== Running 14.c ==========
+Parsed parameter list for function
+Parsed a local variable declaration
+Parsed a set of local variable declaration
+Parsed an expression statement
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+line 4, column 9: error: '%' not defined for bool operands
+    x = true % 3;
+        ^
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+        VarDecl x : int
+      Stmts:
+        Assign
+          LHS:
+            Var(x)
+          RHS:
+            Binary(%)
+              LHS:
+                Bool(true)
+              RHS:
+                Int(3)
+        Return
+          Val:
+            Int(0)
+
+[PASS]  Correctly reported an error and exited with status 2
+----------------------------------------------
+
+========== Running 15.c ==========
+Parsed parameter list for function
+Parsed a local variable declaration
+Parsed a set of local variable declaration
+Parsed an expression statement
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+        VarDecl b : bool
+      Stmts:
+        Assign
+          LHS:
+            Var(b)
+          RHS:
+            Binary(<)
+              LHS:
+                Float(1.200000)
+              RHS:
+                Bool(true)
+        Return
+          Val:
+            Int(0)
+
+********************* FINAL IR (begin) ****************************
+********************* FINAL IR (end) ******************************
+
+[PASS]  Accepted program with no errors
+----------------------------------------------
+
+========== Running 16.c ==========
+Parsed parameter list for function
+Parsed a set of local variable declaration
+Parsed an array assignment statement
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsed parameter list for function
+Parsed a local variable declaration
+Parsed a set of local variable declaration
+Parsed an expression statement
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+line 5, column 9: error: illegal narrowing in call to 'foo' for argument 0
+    foo(x);
+        ^
+  parameter type: ptr
+  argument type:  i32
+Function foo : void
+  Params (1):
+    0: a : int
+  Body:
+    Block
+      Locals:
+      Stmts:
+        ArrayAssign
+          LHS:
+            ArrayAccess a
+              index[0]:
+                Int(0)
+          RHS:
+            Int(3)
+
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+        VarDecl x : int
+      Stmts:
+        Call foo
+          arg[0]:
+            Var(x)
+        Return
+          Val:
+            Int(0)
+
+[PASS]  Correctly reported an error and exited with status 2
+----------------------------------------------
+
+========== Running 17.c ==========
+Parsed parameter list for function
+Parsed a set of local variable declaration
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsed parameter list for function
+Parsed a local array declaration
+Parsed a set of local variable declaration
+Parsed an expression statement
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+line 5, column 9: error: illegal narrowing in call to 'foo' for argument 0
+    foo(a);
+        ^
+  parameter type: i32
+  argument type:  [2 x i32]
+Function foo : void
+  Params (1):
+    0: x : int
+  Body:
+    Block
+      Locals:
+      Stmts:
+
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+        VarDecl a : int
+      Stmts:
+        Call foo
+          arg[0]:
+            Var(a)
+        Return
+          Val:
+            Int(0)
+
+[PASS]  Correctly reported an error and exited with status 2
+----------------------------------------------
+
+========== Running 18.c ==========
+Parsed parameter list for function
+Parsed a set of local variable declaration
+Parsed an expression statement
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+line 3, column 5: error: Assignment to unknown variable 'x'
+    x = 5;
+    ^
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+      Stmts:
+        Assign
+          LHS:
+            Var(x)
+          RHS:
+            Int(5)
+        Return
+          Val:
+            Int(0)
+
+[PASS]  Correctly reported an error and exited with status 2
+----------------------------------------------
+
+========== Running 19.c ==========
+Parsed parameter list for function
+Parsed a set of local variable declaration
+Parsed an array assignment statement
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+line 3, column 5: error: Unknown array 'a' in assignment
+    a[0] = 1;
+    ^
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+      Stmts:
+        ArrayAssign
+          LHS:
+            ArrayAccess a
+              index[0]:
+                Int(0)
+          RHS:
+            Int(1)
+        Return
+          Val:
+            Int(0)
+
+[PASS]  Correctly reported an error and exited with status 2
+----------------------------------------------
+
+========== Running 20.c ==========
+Parsed parameter list for function
+Parsed a set of local variable declaration
+Parsed an expression statement
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+line 6, column 1: error: expected 'void', 'int', 'bool' or 'float' or EOF token
+EOF~cat > 21.c << 'EOF'
+^
+
+[PASS]  Correctly reported an error and exited with status 2
+----------------------------------------------
+
+========== Running 21.c ==========
+Parsing Finished
+=== AST (externs) ===
+********************* FINAL IR (begin) ****************************
+********************* FINAL IR (end) ******************************
+
+[PASS]  Accepted program with no errors
+----------------------------------------------
+
+========== Running 22.c ==========
+Parsed a variable declaration
+Parsed a top-level variable or function declaration
+Parsed parameter list for function
+Parsed a set of local variable declaration
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+line 2, column 5: error: Global variable 'a' conflicts with a function of the same name
+int a;
+    ^
+<ASTnode>
+
+Function a : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+      Stmts:
+        Return
+          Val:
+            Int(0)
+
+[PASS]  Correctly reported an error and exited with status 2
+----------------------------------------------
+
+========== Running 23.c ==========
+Parsed parameter list for function
+Parsed a set of local variable declaration
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+Function f : int
+  Params (2):
+    0: x : int
+    1: x : int
+  Body:
+    Block
+      Locals:
+      Stmts:
+        Return
+          Val:
+            Int(0)
+
+found param in param_list_prime: x
+********************* FINAL IR (begin) ****************************
+********************* FINAL IR (end) ******************************
+
+[PASS]  Accepted program with no errors
+----------------------------------------------
+
+========== Running 24.c ==========
+Parsed parameter list for function
+line 3, column 9: error: expected ';' after array declaration
+    int a[5]
+        ^
+
+[PASS]  Correctly reported an error and exited with status 2
+----------------------------------------------
+
+========== Running 25.c ==========
+Parsed parameter list for function
+line 3, column 12: error: expected ']' after array dimension
+    int a[5;
+           ^
+
+[PASS]  Correctly reported an error and exited with status 2
+----------------------------------------------
+
+========== Running 26.c ==========
+Parsed parameter list for function
+line 3, column 5: error: unexpected token after local variable declaration
+    &x;
+    ^
+
+[PASS]  Correctly reported an error and exited with status 2
+----------------------------------------------
+
+========== Running 27.c ==========
+Parsed a variable declaration
+Parsed a top-level variable or function declaration
+line 2, column 8: error: expected 'void', 'int', 'bool' or 'float' or EOF token
+int x; x = 5;
+       ^
+
+[PASS]  Correctly reported an error and exited with status 2
+----------------------------------------------
+
+========== Running 28.c ==========
+Parsed parameter list for function
+Parsed a set of local variable declaration
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsed parameter list for function
+Parsed a local array declaration
+Parsed a set of local variable declaration
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+Function foo : int
+  Params (1):
+    0: x : int
+  Body:
+    Block
+      Locals:
+      Stmts:
+        Return
+          Val:
+            Var(x)
+
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+        VarDecl a : int
+      Stmts:
+        Return
+          Val:
+            Call foo
+              arg[0]:
+                ArrayAccess a
+                  index[0]:
+                    Call foo
+                      arg[0]:
+                        Int(1)
+
+********************* FINAL IR (begin) ****************************
+********************* FINAL IR (end) ******************************
+
+[PASS]  Accepted program with no errors
+----------------------------------------------
+
+========== Running 29.c ==========
+Parsed parameter list for function
+Parsed a local variable declaration
+Parsed a set of local variable declaration
+Parsed an expression statement
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+        VarDecl x : int
+      Stmts:
+        Assign
+          LHS:
+            Var(x)
+          RHS:
+            Binary(*)
+              LHS:
+                Binary(+)
+                  LHS:
+                    Int(1)
+                  RHS:
+                    Int(2)
+              RHS:
+                Int(3)
+        Return
+          Val:
+            Int(0)
+
+********************* FINAL IR (begin) ****************************
+********************* FINAL IR (end) ******************************
+
+[PASS]  Accepted program with no errors
+----------------------------------------------
+
+========== Running 30.c ==========
+Parsed parameter list for function
+Parsed a local array declaration
+Parsed a set of local variable declaration
+Parsed an array assignment statement
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+        VarDecl a : int
+      Stmts:
+        ArrayAssign
+          LHS:
+            ArrayAccess a
+              index[0]:
+                Binary(*)
+                  LHS:
+                    Binary(+)
+                      LHS:
+                        Int(1)
+                      RHS:
+                        Int(2)
+                  RHS:
+                    Int(1)
+          RHS:
+            Int(7)
+        Return
+          Val:
+            Int(0)
+
+********************* FINAL IR (begin) ****************************
+********************* FINAL IR (end) ******************************
+
+[PASS]  Accepted program with no errors
+----------------------------------------------
+
+========== Running 31.c ==========
+Parsed parameter list for function
+Parsed a set of local variable declaration
+Parsed a set of local variable declaration
+Parsed a set of local variable declaration
+Parsed a set of local variable declaration
+Parsed a list of statements
+Parsed a block
+Parsed a list of statements
+Parsed a block
+Parsed a list of statements
+Parsed a block
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+      Stmts:
+        Block
+          Locals:
+          Stmts:
+            Block
+              Locals:
+              Stmts:
+                Block
+                  Locals:
+                  Stmts:
+        Return
+          Val:
+            Int(0)
+
+********************* FINAL IR (begin) ****************************
+********************* FINAL IR (end) ******************************
+
+[PASS]  Accepted program with no errors
+----------------------------------------------
+
+========== Running 32.c ==========
+Parsed parameter list for function
+Parsed a local array declaration
+Parsed a set of local variable declaration
+Parsed an array assignment statement
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+        VarDecl m : int
+      Stmts:
+        ArrayAssign
+          LHS:
+            ArrayAccess m
+              index[0]:
+                Int(1)
+              index[1]:
+                Int(1)
+              index[2]:
+                Int(1)
+          RHS:
+            Int(7)
+        Return
+          Val:
+            Int(0)
+
+********************* FINAL IR (begin) ****************************
+********************* FINAL IR (end) ******************************
+
+[PASS]  Accepted program with no errors
+----------------------------------------------
+
+========== Running 33.c ==========
+Parsed parameter list for function
+Parsed a set of local variable declaration
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+      Stmts:
+        Return
+          Val:
+            Int(0)
+
+********************* FINAL IR (begin) ****************************
+********************* FINAL IR (end) ******************************
+
+[PASS]  Accepted program with no errors
+----------------------------------------------
+
+========== Running 34.c ==========
+Parsed parameter list for function
+Parsed a local variable declaration
+Parsed a local variable declaration
+Parsed a local variable declaration
+Parsed a set of local variable declaration
+Parsed an expression statement
+Parsed an expression statement
+Parsed an expression statement
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+        VarDecl x : int
+        VarDecl y : float
+        VarDecl b : bool
+      Stmts:
+        Assign
+          LHS:
+            Var(x)
+          RHS:
+            Int(3)
+        Assign
+          LHS:
+            Var(y)
+          RHS:
+            Var(x)
+        Assign
+          LHS:
+            Var(b)
+          RHS:
+            Binary(>)
+              LHS:
+                Var(y)
+              RHS:
+                Float(1.000000)
+        Return
+          Val:
+            Int(0)
+
+********************* FINAL IR (begin) ****************************
+********************* FINAL IR (end) ******************************
+
+[PASS]  Accepted program with no errors
+----------------------------------------------
+
+========== Running 35.c ==========
+Parsed parameter list for function
+Parsed a local array declaration
+Parsed a set of local variable declaration
+Parsed an array assignment statement
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+        VarDecl a : int
+      Stmts:
+        ArrayAssign
+          LHS:
+            ArrayAccess a
+              index[0]:
+                Int(2)
+          RHS:
+            Int(7)
+        Return
+          Val:
+            ArrayAccess a
+              index[0]:
+                Int(2)
+
+********************* FINAL IR (begin) ****************************
+********************* FINAL IR (end) ******************************
+
+[PASS]  Accepted program with no errors
+----------------------------------------------
+
+========== Running 36.c ==========
+Parsed parameter list for function
+Parsed a local array declaration
+Parsed a set of local variable declaration
+Parsed an array assignment statement
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+        VarDecl m : int
+      Stmts:
+        ArrayAssign
+          LHS:
+            ArrayAccess m
+              index[0]:
+                Int(1)
+              index[1]:
+                Int(2)
+          RHS:
+            Int(5)
+        Return
+          Val:
+            Int(0)
+
+********************* FINAL IR (begin) ****************************
+********************* FINAL IR (end) ******************************
+
+[PASS]  Accepted program with no errors
+----------------------------------------------
+
+========== Running 37.c ==========
+Parsed a global array declaration
+Parsed a top-level variable or function declaration
+Parsed parameter list for function
+Parsed a set of local variable declaration
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+ArrayDecl A : float [2][2][2]
+
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+      Stmts:
+        Return
+          Val:
+            Int(0)
+
+********************* FINAL IR (begin) ****************************
+********************* FINAL IR (end) ******************************
+
+[PASS]  Accepted program with no errors
+----------------------------------------------
+
+========== Running 38.c ==========
+Parsed parameter list for function
+Parsed a set of local variable declaration
+Parsed an array assignment statement
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsed parameter list for function
+Parsed a local array declaration
+Parsed a set of local variable declaration
+Parsed an expression statement
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+line 8, column 9: error: illegal narrowing in call to 'foo' for argument 0
+    foo(x);
+        ^
+  parameter type: ptr
+  argument type:  [3 x i32]
+Function foo : void
+  Params (1):
+    0: a : int
+  Body:
+    Block
+      Locals:
+      Stmts:
+        ArrayAssign
+          LHS:
+            ArrayAccess a
+              index[0]:
+                Int(1)
+          RHS:
+            Int(9)
+
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+        VarDecl x : int
+      Stmts:
+        Call foo
+          arg[0]:
+            Var(x)
+        Return
+          Val:
+            Int(0)
+
+[PASS]  Correctly reported an error and exited with status 2
+----------------------------------------------
+
+========== Running 39.c ==========
+Parsed parameter list for function
+Parsed a set of local variable declaration
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsed parameter list for function
+Parsed a set of local variable declaration
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+Function foo : void
+  Params (1):
+    0: x : int
+  Body:
+    Block
+      Locals:
+      Stmts:
+
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+      Stmts:
+        Return
+          Val:
+            Int(0)
+
+********************* FINAL IR (begin) ****************************
+********************* FINAL IR (end) ******************************
+
+[PASS]  Accepted program with no errors
+----------------------------------------------
+
+========== Running 3.c ==========
+Parsing Finished
+=== AST (externs) ===
+********************* FINAL IR (begin) ****************************
+********************* FINAL IR (end) ******************************
+
+[PASS]  Accepted program with no errors
+----------------------------------------------
+
+========== Running 40.c ==========
+Parsed parameter list for function
+Parsed a set of local variable declaration
+Parsed a set of local variable declaration
+Parsed a list of statements
+Parsed a block
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+      Stmts:
+        Block
+          Locals:
+          Stmts:
+        Return
+          Val:
+            Int(0)
+
+********************* FINAL IR (begin) ****************************
+********************* FINAL IR (end) ******************************
+
+[PASS]  Accepted program with no errors
+----------------------------------------------
+
+========== Running 41.c ==========
+Parsed parameter list for function
+Parsed a set of local variable declaration
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsed parameter list for function
+Parsed a set of local variable declaration
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+Function f : float
+  Params (0):
+  Body:
+    Block
+      Locals:
+      Stmts:
+        Return
+          Val:
+            Int(1)
+
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+      Stmts:
+        Return
+          Val:
+            Int(0)
+
+********************* FINAL IR (begin) ****************************
+********************* FINAL IR (end) ******************************
+
+[PASS]  Accepted program with no errors
+----------------------------------------------
+
+========== Running 42.c ==========
+Parsed parameter list for function
+Parsed a set of local variable declaration
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsed parameter list for function
+Parsed a local array declaration
+Parsed a set of local variable declaration
+Parsed an expression statement
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+Function foo : void
+  Params (1):
+    0: z : float
+  Body:
+    Block
+      Locals:
+      Stmts:
+
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+        VarDecl a : int
+      Stmts:
+        Call foo
+          arg[0]:
+            ArrayAccess a
+              index[0]:
+                Int(2)
+        Return
+          Val:
+            Int(0)
+
+********************* FINAL IR (begin) ****************************
+********************* FINAL IR (end) ******************************
+
+[PASS]  Accepted program with no errors
+----------------------------------------------
+
+========== Running 43.c ==========
+Parsed parameter list for function
+Parsed a local variable declaration
+Parsed a set of local variable declaration
+Parsed an expression statement
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+        VarDecl x : int
+      Stmts:
+        Assign
+          LHS:
+            Var(x)
+          RHS:
+            Binary(+)
+              LHS:
+                Bool(true)
+              RHS:
+                Bool(false)
+        Return
+          Val:
+            Int(0)
+
+********************* FINAL IR (begin) ****************************
+********************* FINAL IR (end) ******************************
+
+[PASS]  Accepted program with no errors
+----------------------------------------------
+
+========== Running 44.c ==========
+Parsed parameter list for function
+Parsed a local array declaration
+Parsed a set of local variable declaration
+Parsed an array assignment statement
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+line 4, column 8: error: array index for 'a' must be int
+    a[(true)] = 1;
+       ^
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+        VarDecl a : int
+      Stmts:
+        ArrayAssign
+          LHS:
+            ArrayAccess a
+              index[0]:
+                Bool(true)
+          RHS:
+            Int(1)
+        Return
+          Val:
+            Int(0)
+
+[PASS]  Correctly reported an error and exited with status 2
+----------------------------------------------
+
+========== Running 45.c ==========
+Parsed parameter list for function
+Parsed a local variable declaration
+Parsed a set of local variable declaration
+Parsed an expression statement
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+line 4, column 9: error: Unknown variable 'y'
+    x = y + 3;
+        ^
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+        VarDecl x : int
+      Stmts:
+        Assign
+          LHS:
+            Var(x)
+          RHS:
+            Binary(+)
+              LHS:
+                Var(y)
+              RHS:
+                Int(3)
+        Return
+          Val:
+            Int(0)
+
+[PASS]  Correctly reported an error and exited with status 2
+----------------------------------------------
+
+========== Running 46.c ==========
+Parsed parameter list for function
+Parsed a set of local variable declaration
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsed parameter list for function
+Parsed a local array declaration
+Parsed a set of local variable declaration
+Parsed an expression statement
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+line 6, column 9: error: illegal narrowing in call to 'foo' for argument 0
+    foo(x); // wrong dimension
+        ^
+  parameter type: ptr
+  argument type:  [2 x i32]
+Function foo : void
+  Params (1):
+    0: a : int
+  Body:
+    Block
+      Locals:
+      Stmts:
+
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+        VarDecl x : int
+      Stmts:
+        Call foo
+          arg[0]:
+            Var(x)
+        Return
+          Val:
+            Int(0)
+
+[PASS]  Correctly reported an error and exited with status 2
+----------------------------------------------
+
+========== Running 47.c ==========
+Parsed parameter list for function
+Parsed a local array declaration
+Parsed a set of local variable declaration
+line 4, column 7: error: expected primary expression
+    a[] = 3;
+      ^
+
+[PASS]  Correctly reported an error and exited with status 2
+----------------------------------------------
+
+========== Running 48.c ==========
+Parsed parameter list for function
+Parsed a local variable declaration
+Parsed a set of local variable declaration
+Parsed an expression statement
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+        VarDecl x : int
+      Stmts:
+        Assign
+          LHS:
+            Var(x)
+          RHS:
+            Bool(true)
+        Return
+          Val:
+            Int(0)
+
+********************* FINAL IR (begin) ****************************
+********************* FINAL IR (end) ******************************
+
+[PASS]  Accepted program with no errors
+----------------------------------------------
+
+========== Running 49.c ==========
+Parsed parameter list for function
+Parsed a set of local variable declaration
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsed parameter list for function
+Parsed a set of local variable declaration
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsed parameter list for function
+Parsed a set of local variable declaration
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+Function f : int
+  Params (1):
+    0: x : int
+  Body:
+    Block
+      Locals:
+      Stmts:
+        Return
+          Val:
+            Binary(+)
+              LHS:
+                Var(x)
+              RHS:
+                Int(1)
+
+Function g : int
+  Params (1):
+    0: y : int
+  Body:
+    Block
+      Locals:
+      Stmts:
+        Return
+          Val:
+            Binary(*)
+              LHS:
+                Var(y)
+              RHS:
+                Int(2)
+
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+      Stmts:
+        Return
+          Val:
+            Call f
+              arg[0]:
+                Call g
+                  arg[0]:
+                    Call f
+                      arg[0]:
+                        Int(2)
+
+********************* FINAL IR (begin) ****************************
+********************* FINAL IR (end) ******************************
+
+[PASS]  Accepted program with no errors
+----------------------------------------------
+
+========== Running 4.c ==========
+Parsed parameter list for function
+Parsed a local array declaration
+Parsed a set of local variable declaration
+Parsed an array assignment statement
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+line 4, column 7: error: array index for 'a' must be int
+    a[1.5] = 2;
+      ^
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+        VarDecl a : int
+      Stmts:
+        ArrayAssign
+          LHS:
+            ArrayAccess a
+              index[0]:
+                Float(1.500000)
+          RHS:
+            Int(2)
+        Return
+          Val:
+            Int(0)
+
+[PASS]  Correctly reported an error and exited with status 2
+----------------------------------------------
+
+========== Running 50.c ==========
+Parsed parameter list for function
+Parsed a local array declaration
+Parsed a set of local variable declaration
+Parsed an array assignment statement
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+        VarDecl m : int
+      Stmts:
+        ArrayAssign
+          LHS:
+            ArrayAccess m
+              index[0]:
+                Int(1)
+              index[1]:
+                Binary(+)
+                  LHS:
+                    Int(1)
+                  RHS:
+                    Int(1)
+          RHS:
+            Int(5)
+        Return
+          Val:
+            Int(0)
+
+********************* FINAL IR (begin) ****************************
+********************* FINAL IR (end) ******************************
+
+[PASS]  Accepted program with no errors
+----------------------------------------------
+
+========== Running 5.c ==========
+Parsed parameter list for function
+Parsed a local array declaration
+Parsed a set of local variable declaration
+Parsed an array assignment statement
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+line 4, column 7: error: array index for 'a' must be int
+    a[1.0 + 1] = 3;
+      ^
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+        VarDecl a : int
+      Stmts:
+        ArrayAssign
+          LHS:
+            ArrayAccess a
+              index[0]:
+                Binary(+)
+                  LHS:
+                    Float(1.000000)
+                  RHS:
+                    Int(1)
+          RHS:
+            Int(3)
+        Return
+          Val:
+            Int(0)
+
+[PASS]  Correctly reported an error and exited with status 2
+----------------------------------------------
+
+========== Running 6.c ==========
+Parsed parameter list for function
+Parsed a local array declaration
+Parsed a set of local variable declaration
+Parsed an array assignment statement
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+line 4, column 7: error: too few indices supplied for array 'm'
+    m[2] = 9;
+      ^
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+        VarDecl m : int
+      Stmts:
+        ArrayAssign
+          LHS:
+            ArrayAccess m
+              index[0]:
+                Int(2)
+          RHS:
+            Int(9)
+        Return
+          Val:
+            Int(0)
+
+[PASS]  Correctly reported an error and exited with status 2
+----------------------------------------------
+
+========== Running 7.c ==========
+Parsed parameter list for function
+Parsed a local array declaration
+Parsed a set of local variable declaration
+Parsed an array assignment statement
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+line 4, column 10: error: too many indices supplied for array 'm'
+    m[1][0] = 7;
+         ^
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+        VarDecl m : int
+      Stmts:
+        ArrayAssign
+          LHS:
+            ArrayAccess m
+              index[0]:
+                Int(1)
+              index[1]:
+                Int(0)
+          RHS:
+            Int(7)
+        Return
+          Val:
+            Int(0)
+
+[PASS]  Correctly reported an error and exited with status 2
+----------------------------------------------
+
+========== Running 8.c ==========
+Parsed parameter list for function
+Parsed a local array declaration
+Parsed a set of local variable declaration
+Parsed an expression statement
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+line 4, column 9: error: illegal narrowing in assignment to 'a'
+    a = 3;
+        ^
+  variable type: [5 x i32]
+  value type:    i32
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+        VarDecl a : int
+      Stmts:
+        Assign
+          LHS:
+            Var(a)
+          RHS:
+            Int(3)
+        Return
+          Val:
+            Int(0)
+
+[PASS]  Correctly reported an error and exited with status 2
+----------------------------------------------
+
+========== Running 9.c ==========
+Parsed parameter list for function
+Parsed a local variable declaration
+Parsed a set of local variable declaration
+Parsed an expression statement
+Parsed a return statment
+Parsed a list of statements
+Parsed block of statements in function
+Parsed a function declaration
+Parsed a top-level variable or function declaration
+Parsing Finished
+=== AST (externs) ===
+line 4, column 9: error: illegal narrowing in assignment to 'x'
+    x = 1.5;
+        ^
+  variable type: i32
+  value type:    float
+Function main : int
+  Params (0):
+  Body:
+    Block
+      Locals:
+        VarDecl x : int
+      Stmts:
+        Assign
+          LHS:
+            Var(x)
+          RHS:
+            Float(1.500000)
+        Return
+          Val:
+            Int(0)
+
+[PASS]  Correctly reported an error and exited with status 2
+----------------------------------------------
+
+==============================================
+Tests completed: 48
+Failures:        0
+Successes:       48
+==============================================
+All tests passed!

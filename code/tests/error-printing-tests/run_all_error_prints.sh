@@ -3,7 +3,6 @@
 # Path to your compiler executable
 COMPILER="../../mccomp"
 
-
 echo "=============================================="
 echo "         MiniC Error-Printing Test Suite       "
 echo "=============================================="
@@ -17,19 +16,29 @@ for f in *.c; do
 
     echo "========== Running $f =========="
 
-    # run compiler and capture return code
     OUTPUT=$($COMPILER "$f" 2>&1)
     RET=$?
 
     echo "$OUTPUT"
     echo
 
-    # check exit status
-    if [ $RET -ne 0 ]; then
-        echo "[FAIL]  Compiler exited with status $RET"
-        FAILED=$((FAILED + 1))
+    # Decide pass / fail based on error text and exit code
+    if echo "$OUTPUT" | grep -q "error:"; then
+        # Compiler reported an error
+        if [ $RET -ne 0 ]; then
+            echo "[PASS]  Correctly reported an error and exited with status $RET"
+        else
+            echo "[FAIL]  Reported an error but exit status was 0"
+            FAILED=$((FAILED + 1))
+        fi
     else
-        echo "[PASS]  Compiler exited normally"
+        # Compiler reported no error
+        if [ $RET -eq 0 ]; then
+            echo "[PASS]  Accepted program with no errors"
+        else
+            echo "[FAIL]  No error text but exit status was $RET"
+            FAILED=$((FAILED + 1))
+        fi
     fi
 
     echo "----------------------------------------------"
@@ -41,3 +50,10 @@ echo "Tests completed: $TOTAL"
 echo "Failures:        $FAILED"
 echo "Successes:       $((TOTAL - FAILED))"
 echo "=============================================="
+if [ $FAILED -eq 0 ]; then
+    echo "All tests passed!"
+    exit 0
+else
+    echo "Some tests failed."
+    exit 1
+fi

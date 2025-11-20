@@ -41,7 +41,23 @@ using namespace llvm::sys;
 
 FILE *pFile;
 
+static const char *InputFileName = nullptr;
+
+
 static std::vector<std::string> SourceLines;
+
+static const int MaxErrors = 20;
+static int ErrorCount = 0;
+
+static void noteError() {
+  ++ErrorCount;
+  if (ErrorCount >= MaxErrors) {
+    fprintf(stderr,
+            "fatal error: too many errors emitted, stopping now\n");
+    exit(2);
+  }
+}
+
 
 
 //===----------------------------------------------------------------------===//
@@ -127,6 +143,8 @@ public:
 
 static void printErrorAt(const TOKEN &tok, const char *msg);
 static void printErrorAtCurrent(const char *msg);
+static void printErrorAtLocation(int line, int col, const char *msg);  
+
 
 static std::string globalLexeme;
 static int lineNo, columnNo;
@@ -986,20 +1004,22 @@ static void printErrorAtCurrent(const char *msg);
 /// LogError* - These are little helper function for error handling.
 std::unique_ptr<ASTnode> LogError(TOKEN tok, const char *Str) {
   printErrorAt(tok, Str);
-  exit(2);
+  noteError();
   return nullptr;
 }
 
+
 std::unique_ptr<FunctionPrototypeAST> LogErrorP(TOKEN tok, const char *Str) {
-  LogError(tok, Str);   // this already prints and exits
-  return nullptr;       // unreachable, keeps callers happy
+  printErrorAt(tok, Str);
+  noteError();
+  return nullptr;
 }
 
 
 // For callers which only supply a message, use CurTok as location
 std::unique_ptr<ASTnode> LogError(const char *Str) {
   printErrorAtCurrent(Str);
-  exit(2);
+  noteError();
   return nullptr;
 }
 
@@ -1008,8 +1028,13 @@ static void printErrorAt(const TOKEN &tok, const char *msg) {
   int line = tok.lineNo;
   int col  = tok.columnNo;
 
-  // Header line: "line:col: error: message"
-  fprintf(stderr, "line %d, column %d: error: %s\n", line, col, msg);
+  const char *fname = InputFileName ? InputFileName : "<input>";
+
+  // Bold filename and line/col, red "error:", then reset
+  fprintf(stderr,
+          "\033[1m%s:%d:%d:\033[0m \033[1;31merror:\033[0m %s\n",
+          fname, line, col, msg);
+
 
   // Print the source line if we have it
   if (line >= 1 && line <= (int)SourceLines.size()) {
@@ -1030,17 +1055,22 @@ static void printErrorAt(const TOKEN &tok, const char *msg) {
 }
 
 static void printErrorAtCurrent(const char *msg) {
-  // If CurTok has a sensible location, use it, otherwise fall back
   if (CurTok.type != INVALID && CurTok.type != EOF_TOK) {
     printErrorAt(CurTok, msg);
   } else {
-    fprintf(stderr, "error: %s\n", msg);
+    const char *fname = InputFileName ? InputFileName : "<input>";
+    fprintf(stderr, "%s: error: %s\n", fname, msg);
   }
 }
 
+
 static void printCodegenErrorAtNode(const ASTnode* node, const char *msg) {
   if (!node) {
-    fprintf(stderr, "error: %s\n", msg);
+    const char *fname = InputFileName ? InputFileName : "<input>";
+    fprintf(stderr,
+            "\033[1m%s:\033[0m \033[1;31merror:\033[0m %s\n",
+            fname, msg);
+    noteError();
     return;
   }
 
@@ -1048,46 +1078,30 @@ static void printCodegenErrorAtNode(const ASTnode* node, const char *msg) {
   int col  = node->getCol();
 
   if (line < 1 || col < 1 || line > (int)SourceLines.size()) {
-    // No useful location stored, fallback
-    fprintf(stderr, "error: %s\n", msg);
+    const char *fname = InputFileName ? InputFileName : "<input>";
+    fprintf(stderr,
+            "\033[1m%s:\033[0m \033[1;31merror:\033[0m %s\n",
+            fname, msg);
+    noteError();
     return;
   }
 
-  fprintf(stderr, "line %d, column %d: error: %s\n", line, col, msg);
-
-  const std::string &src = SourceLines[line - 1];
-  fprintf(stderr, "%s\n", src.c_str());
-
-  int caretCol = col;
-  if (caretCol < 1) caretCol = 1;
-  for (int i = 1; i < caretCol; ++i) {
-    char c = (i - 1 < (int)src.size()) ? src[i - 1] : ' ';
-    if (c == '\t') fputc('\t', stderr);
-    else fputc(' ', stderr);
-  }
-  fputc('^', stderr);
-  fputc('\n', stderr);
+  printErrorAtLocation(line, col, msg);
+  noteError();
 }
+
+
 
 // Print an error at an explicit (line, col)
 static void printErrorAtLocation(int line, int col, const char *msg) {
-  fprintf(stderr, "line %d, column %d: error: %s\n", line, col, msg);
-
-  if (line >= 1 && line <= (int)SourceLines.size()) {
-    const std::string &src = SourceLines[line - 1];
-    fprintf(stderr, "%s\n", src.c_str());
-
-    int caretCol = col;
-    if (caretCol < 1) caretCol = 1;
-    for (int i = 1; i < caretCol; ++i) {
-      char c = (i - 1 < (int)src.size()) ? src[i - 1] : ' ';
-      if (c == '\t') fputc('\t', stderr);
-      else fputc(' ', stderr);
-    }
-    fputc('^', stderr);
-    fputc('\n', stderr);
-  }
+  TOKEN fake;
+  fake.type     = INVALID;
+  fake.lexeme   = "";
+  fake.lineNo   = line;
+  fake.columnNo = col;
+  printErrorAt(fake, msg);
 }
+
 
 // Same, but driven from an AST node
 static void printErrorAtNode(const ASTnode *node, const char *msg) {
@@ -1103,6 +1117,7 @@ static void printErrorAtNode(const ASTnode *node, const char *msg) {
   printErrorAtCurrent(msg);
 }
 
+
 static void reportNodeError(const ASTnode* node, const char* msg) {
   if (node) {
     int line = node->getLine();
@@ -1114,14 +1129,16 @@ static void reportNodeError(const ASTnode* node, const char* msg) {
       fake.lineNo   = line;
       fake.columnNo = col;
       printErrorAt(fake, msg);
-      exit(2);
+      noteError();
+      return;
     }
   }
 
   // Fallback if node has no usable location
   fprintf(stderr, "error: %s\n", msg);
-  exit(2);
+  noteError();
 }
+
 
 
 //===----------------------------------------------------------------------===//
@@ -2345,6 +2362,12 @@ static LLVMContext TheContext;
 static IRBuilder<> Builder(TheContext);
 static std::unique_ptr<Module> TheModule;
 
+static Value* codegenError(const ASTnode* node, const char* msg) {
+  printCodegenErrorAtNode(node, msg);
+  noteError();
+  return nullptr;
+}
+
 // ---- Codegen globals and helpers ----
 
 // Current frame locals (name -> alloca)
@@ -2374,17 +2397,27 @@ static Type* typeFromString(const std::string& t) {
   if (t == "bool")  return miniCBoolTy();
   if (t == "float") return miniCFloatTy();
   if (t == "void")  return Type::getVoidTy(TheContext);
+
   fprintf(stderr, "Unknown type '%s'\n", t.c_str());
-  exit(2);
+  noteError();
+  return nullptr;
 }
+
 
 // Build a nested LLVM ArrayType for dims like [D1][D2][D3]
 static Type* buildArrayType(Type* elemTy, const std::vector<int>& dims) {
+  if (!elemTy) {
+    // previous error, propagate
+    noteError();
+    return nullptr;
+  }
+
   Type* arrTy = elemTy;
   for (int i = (int)dims.size() - 1; i >= 0; --i) {
     if (dims[i] <= 0) {
       fprintf(stderr, "Array dimension must be positive, got %d\n", dims[i]);
-      exit(2);
+      noteError();
+      return nullptr;
     }
     arrTy = ArrayType::get(arrTy, dims[i]);
   }
@@ -2400,19 +2433,21 @@ static FunctionType* functionTypeFromProto(const FunctionPrototypeAST* P) {
 
   for (const auto& param : P->getParams()) {
     Type* baseTy = typeFromString(param->getType());
+    if (!baseTy) {
+      // typeFromString already printed an error and called noteError()
+      return nullptr;
+    }
+
     const auto& dims = param->getDims();
 
     if (dims.empty()) {
       // Scalar parameter
       paramTypes.push_back(baseTy);
     } else {
-      // Array parameter. Represent as a pointer in LLVM IR.
-      // For 1D: int a[10]  →  i32*
-      // For 2D/3D: int a[10][5] -> pointer to [5 x i32], etc.
+      // Array parameter, represent as a pointer in LLVM IR
       Type* elemTy = baseTy;
 
       if (dims.size() > 1) {
-        // Drop the first dimension (C-style array parameter decay)
         std::vector<int> tailDims(dims.begin() + 1, dims.end());
         for (int i = (int)tailDims.size() - 1; i >= 0; --i) {
           elemTy = ArrayType::get(elemTy, tailDims[i]);
@@ -2421,19 +2456,28 @@ static FunctionType* functionTypeFromProto(const FunctionPrototypeAST* P) {
 
       Type* ptrTy = PointerType::get(TheContext, 0);
       paramTypes.push_back(ptrTy);
-
     }
   }
 
   Type* retTy = typeFromString(P->getType());
+  if (!retTy) {
+    // typeFromString already reported the error
+    return nullptr;
+  }
+
   return FunctionType::get(retTy, paramTypes, /*isVarArg=*/false);
 }
+
 
 
 // Declare a function in the module from a prototype, or check a previous one
 static Function* declareFunctionFromProto(const FunctionPrototypeAST* P) {
   const std::string& name = P->getName();
   FunctionType* FT = functionTypeFromProto(P);
+  if(!FT) {
+    // functionTypeFromProto already reported the error
+    return nullptr;
+  }
 
   // Look for an existing function with this name
   Function* F = TheModule->getFunction(name);
@@ -2605,12 +2649,17 @@ Value* BlockAST::codegen() {
   BasicBlock* curBB = Builder.GetInsertBlock();
   if (!curBB) {
     fprintf(stderr, "Block codegen used with no active insertion block\n");
-    exit(2);
+    noteError();
+    popScope();
+    return nullptr;
   }
+
   Function* F = curBB->getParent();
   if (!F) {
     fprintf(stderr, "Block codegen used outside of a function\n");
-    exit(2);
+    noteError();
+    popScope();
+    return nullptr;
   }
 
   // Allocate each local via its own codegen (works for scalars and arrays)
@@ -2628,33 +2677,45 @@ Value* BlockAST::codegen() {
 }
 
 
+
 Value* VarDeclAST::codegen() {
   BasicBlock* curBB = Builder.GetInsertBlock();
   if (!curBB) {
     fprintf(stderr, "Local variable '%s' declared outside of a function\n",
             getName().c_str());
-    exit(2);
+    noteError();
+    return nullptr;
   }
 
   Function* F = curBB->getParent();
   if (!F) {
     fprintf(stderr, "Local variable '%s' declared with no parent function\n",
             getName().c_str());
-    exit(2);
+    noteError();
+    return nullptr;
   }
 
   const std::string& name = getName();
   if (lookupLocalCurrent(name)) {
     fprintf(stderr, "Redeclaration of local '%s'\n", name.c_str());
-    exit(2);
+    noteError();
+    return nullptr;
   }
 
   Type* ty = typeFromString(getType());
+  if (!ty) {
+    // typeFromString already reported the error
+    return nullptr;
+  }
+
   AllocaInst* slot = CreateEntryAlloca(F, name, ty);
   Builder.CreateStore(zeroOf(ty), slot);
   NamedValues[name] = slot;
   return slot;
 }
+
+
+
 
 
 // ================== Array helpers (index + GEP) ==================
@@ -2669,8 +2730,10 @@ static Value* codegenCheckedIndex(ASTnode* idxNode,
   if (!isIntTy(idxTy)) {
     std::string msg = "array index for '" + arrayName + "' must be int";
     printCodegenErrorAtNode(idxNode, msg.c_str());
-    exit(2);
+    noteError();
+    return nullptr;
   }
+
   return idxV;
 }
 
@@ -2691,17 +2754,23 @@ static void computeArrayVarElementPtr(
     Value *&elemPtr,
     Type *&elemTy) {
 
+  // default to failure
+  elemPtr = nullptr;
+  elemTy  = nullptr;
+
   if (indices.empty()) {
     std::string msg = "array access on '" + name + "' needs at least one index";
-    printErrorAtCurrent(msg.c_str());
-    exit(2);
+    printCodegenErrorAtNode(nullptr, msg.c_str());
+    noteError();
+    return;
   }
 
   auto *arrTy = dyn_cast<ArrayType>(baseTy);
   if (!arrTy) {
     fprintf(stderr, "Internal error: '%s' is not an array type\n",
             name.c_str());
-    exit(2);
+    noteError();
+    return;
   }
 
   std::vector<Value*> idxList;
@@ -2713,23 +2782,26 @@ static void computeArrayVarElementPtr(
     if (!isa<ArrayType>(curTy)) {
       std::string msg =
         "too many indices supplied for array '" + name + "'";
-      printErrorAtNode(indices[i].get(), msg.c_str());
-      exit(2);
+      printCodegenErrorAtNode(indices[i].get(), msg.c_str());
+      noteError();
+      return;
     }
 
     Value *idxV = indices[i]->codegen();
     if (!idxV) {
       fprintf(stderr, "Internal error: null index codegen for '%s'\n",
               name.c_str());
-      exit(2);
+      noteError();
+      return;
     }
 
     Type *idxTy = idxV->getType();
     if (!isIntTy(idxTy)) {
       std::string msg =
         "array index for '" + name + "' must be int";
-      printErrorAtNode(indices[i].get(), msg.c_str());
-      exit(2);
+      printCodegenErrorAtNode(indices[i].get(), msg.c_str());
+      noteError();
+      return;
     }
 
     idxList.push_back(idxV);
@@ -2739,9 +2811,9 @@ static void computeArrayVarElementPtr(
   if (isa<ArrayType>(curTy)) {
     std::string msg =
       "too few indices supplied for array '" + name + "'";
-    // use last index node for location, closest to error
-    printErrorAtNode(indices.back().get(), msg.c_str());
-    exit(2);
+    printCodegenErrorAtNode(indices.back().get(), msg.c_str());
+    noteError();
+    return;
   }
 
   elemTy = curTy;
@@ -2762,6 +2834,7 @@ static void computeArrayVarElementPtr(
 }
 
 
+
 // name       : parameter name, used as key in ArrayParamInfo
 // ptrVal     : pointer value loaded from alloca or global
 // metaElemTy : ArrayParamInfo[name].ElemTy
@@ -2776,35 +2849,43 @@ static void computePointerParamElementPtr(
     Value *&elemPtr,
     Type *&elemTy) {
 
+  elemPtr = nullptr;
+  elemTy  = nullptr;
+
   if (indices.empty()) {
     std::string msg =
       "array access on '" + name + "' needs at least one index";
-    printErrorAtCurrent(msg.c_str());
-    exit(2);
+    printCodegenErrorAtNode(nullptr, msg.c_str());
+    noteError();
+    return;
   }
 
-  // 1D pointer parameter: elemTy is scalar
+  // 1D pointer parameter
   if (!isa<ArrayType>(metaElemTy)) {
     if (indices.size() != 1) {
       std::string msg =
         "too many indices for 1D pointer '" + name + "'";
-      printErrorAtNode(indices[1 < indices.size() ? 1 : 0].get(),
-                       msg.c_str());
-      exit(2);
+      ASTnode *locNode =
+        indices[1 < indices.size() ? 1 : 0].get();
+      printCodegenErrorAtNode(locNode, msg.c_str());
+      noteError();
+      return;
     }
 
     Value *idxV = indices[0]->codegen();
     if (!idxV) {
       fprintf(stderr, "Internal error: null index codegen for '%s'\n",
               name.c_str());
-      exit(2);
+      noteError();
+      return;
     }
 
     if (!isIntTy(idxV->getType())) {
       std::string msg =
         "array index for '" + name + "' must be int";
-      printErrorAtNode(indices[0].get(), msg.c_str());
-      exit(2);
+      printCodegenErrorAtNode(indices[0].get(), msg.c_str());
+      noteError();
+      return;
     }
 
     elemTy = metaElemTy;
@@ -2817,22 +2898,23 @@ static void computePointerParamElementPtr(
     return;
   }
 
-  // Pointer parameter for 2D or 3D arrays.
+  // 2D or 3D pointer-to-array parameter
   Type *curElemTy = metaElemTy;
   std::vector<Value*> gepIdx;
 
-  // First index selects which array in parameter
   Value *firstIdx = indices[0]->codegen();
   if (!firstIdx) {
     fprintf(stderr, "Internal error: null index codegen for '%s'\n",
             name.c_str());
-    exit(2);
+    noteError();
+    return;
   }
   if (!isIntTy(firstIdx->getType())) {
     std::string msg =
       "array index for '" + name + "' must be int";
-    printErrorAtNode(indices[0].get(), msg.c_str());
-    exit(2);
+    printCodegenErrorAtNode(indices[0].get(), msg.c_str());
+    noteError();
+    return;
   }
   gepIdx.push_back(firstIdx);
 
@@ -2840,22 +2922,25 @@ static void computePointerParamElementPtr(
     if (!isa<ArrayType>(curElemTy)) {
       std::string msg =
         "too many indices for pointer-to-array '" + name + "'";
-      printErrorAtNode(indices[i].get(), msg.c_str());
-      exit(2);
+      printCodegenErrorAtNode(indices[i].get(), msg.c_str());
+      noteError();
+      return;
     }
 
     Value *idxV = indices[i]->codegen();
     if (!idxV) {
       fprintf(stderr, "Internal error: null index codegen for '%s'\n",
               name.c_str());
-      exit(2);
+      noteError();
+      return;
     }
 
     if (!isIntTy(idxV->getType())) {
       std::string msg =
         "array index for '" + name + "' must be int";
-      printErrorAtNode(indices[i].get(), msg.c_str());
-      exit(2);
+      printCodegenErrorAtNode(indices[i].get(), msg.c_str());
+      noteError();
+      return;
     }
 
     gepIdx.push_back(idxV);
@@ -2865,8 +2950,9 @@ static void computePointerParamElementPtr(
   if (isa<ArrayType>(curElemTy)) {
     std::string msg =
       "too few indices for pointer-to-array '" + name + "'";
-    printErrorAtNode(indices.back().get(), msg.c_str());
-    exit(2);
+    printCodegenErrorAtNode(indices.back().get(), msg.c_str());
+    noteError();
+    return;
   }
 
   elemTy = curElemTy;
@@ -2880,66 +2966,7 @@ static void computePointerParamElementPtr(
 
 
 
-Value* ArrayAccessAST::codegen() {
-  Value *basePtr = nullptr;
-  Type  *baseTy  = nullptr;
-  AllocaInst *localAlloca = nullptr;
-
-  if (AllocaInst *local = lookupLocal(name)) {
-    basePtr = local;
-    baseTy  = local->getAllocatedType();
-    localAlloca = local;
-  } else if (GlobalVariable *global = lookupGlobal(name)) {
-    basePtr = global;
-    baseTy  = global->getValueType();
-  } else {
-    std::string msg = "Unknown array '" + name + "'";
-    printErrorAtNode(this, msg.c_str());
-    exit(2);
-  }
-
-
-  // Case 1: true array variable
-  if (isa<ArrayType>(baseTy)) {
-    Value *elemPtr = nullptr;
-    Type  *elemTy  = nullptr;
-
-    computeArrayVarElementPtr(
-        name, localAlloca, basePtr, baseTy, indices, elemPtr, elemTy);
-
-    return Builder.CreateLoad(elemTy, elemPtr, name + "_elem");
-  }
-
-  // Case 2: pointer-style array parameter
-  if (auto *ptrTy = dyn_cast<PointerType>(baseTy)) {
-    Value *ptrVal = nullptr;
-    if (localAlloca) {
-      ptrVal = Builder.CreateLoad(ptrTy, localAlloca, name + "_ptr");
-    } else {
-      ptrVal = basePtr;
-    }
-
-    auto metaIt = ArrayParamInfo.find(name);
-    if (metaIt == ArrayParamInfo.end()) {
-      fprintf(stderr,
-              "Pointer variable '%s' used in array access is not a known array parameter\n",
-              name.c_str());
-      exit(2);
-    }
-    Type *metaElemTy = metaIt->second.ElemTy;
-
-    Value *elemPtr = nullptr;
-    Type  *elemTy  = nullptr;
-
-    computePointerParamElementPtr(
-        name, ptrVal, metaElemTy, indices, elemPtr, elemTy);
-
-    return Builder.CreateLoad(elemTy, elemPtr, name + "_elem");
-  }
-
-  fprintf(stderr, "'%s' is not an array or pointer value\n", name.c_str());
-  exit(2);
-}
+//================== Array assignment codegen ==================
 
 
 Value* ArrayAssignAST::codegen() {
@@ -2961,8 +2988,10 @@ Value* ArrayAssignAST::codegen() {
   } else {
     std::string msg = "Unknown array '" + name + "' in assignment";
     printErrorAtNode(lhs, msg.c_str());
-    exit(2);
+    noteError();
+    return nullptr;
   }
+
 
 
 
@@ -2970,7 +2999,7 @@ Value* ArrayAssignAST::codegen() {
   Type  *elemTy  = nullptr;
 
   if (isa<ArrayType>(baseTy)) {
-    computeArrayVarElementPtr(
+  computeArrayVarElementPtr(
         name, localAlloca, basePtr, baseTy, indices, elemPtr, elemTy);
   } else if (auto *ptrTy = dyn_cast<PointerType>(baseTy)) {
     Value *ptrVal = nullptr;
@@ -2982,11 +3011,13 @@ Value* ArrayAssignAST::codegen() {
 
     auto metaIt = ArrayParamInfo.find(name);
     if (metaIt == ArrayParamInfo.end()) {
-      fprintf(stderr,
-              "Pointer variable '%s' used in array assignment is not a known array parameter\n",
-              name.c_str());
-      exit(2);
-    }
+    fprintf(stderr,
+            "Pointer variable '%s' used in array assignment is not a known array parameter\n",
+            name.c_str());
+    noteError();
+    return nullptr;
+  }
+
     Type *metaElemTy = metaIt->second.ElemTy;
 
     computePointerParamElementPtr(
@@ -2994,7 +3025,14 @@ Value* ArrayAssignAST::codegen() {
   } else {
     std::string msg = "'" + name + "' is not an array or pointer in assignment";
     printErrorAtNode(lhs, msg.c_str());
-    exit(2);
+    noteError();
+    return nullptr;
+  }
+
+  // check helper success
+  if (!elemPtr || !elemTy) {
+    // helper already logged and bumped ErrorCount
+    return nullptr;
   }
 
 
@@ -3011,7 +3049,8 @@ Value* ArrayAssignAST::codegen() {
       errs() << "  element type: "; elemTy->print(errs());
       errs() << "\n  value type:   "; srcTy->print(errs());
       errs() << "\n";
-      exit(2);
+      noteError();
+      return nullptr;
     }
     rhs = castTo(elemTy, rhs, "arrayassign");
   }
@@ -3033,12 +3072,24 @@ Value* ArrayDeclAST::codegen() {
   Type *elemTy = typeFromString(getType());
   const std::vector<int> &dims = getDims();
 
+  // No dimensions at all → error, but no hard exit
   if (dims.empty()) {
     fprintf(stderr, "Array '%s' has no dimensions\n", name.c_str());
-    exit(2);
+    noteError();
+    return nullptr;
+  }
+
+  // typeFromString already prints an error and notes it if it fails,
+  // so just propagate the failure.
+  if (!elemTy) {
+    return nullptr;
   }
 
   Type *arrTy = buildArrayType(elemTy, dims);
+  // buildArrayType now also reports and notes errors, so propagate.
+  if (!arrTy) {
+    return nullptr;
+  }
 
   BasicBlock *curBB = Builder.GetInsertBlock();
   Function *F = curBB ? curBB->getParent() : nullptr;
@@ -3047,14 +3098,17 @@ Value* ArrayDeclAST::codegen() {
   if (!F) {
     if (lookupGlobal(name) || GlobalNamedValues.count(name)) {
       fprintf(stderr, "Redeclaration of global array '%s'\n", name.c_str());
-      exit(2);
+      noteError();
+      return nullptr;
     }
     if (TheModule->getFunction(name)) {
       fprintf(stderr,
               "Global array '%s' conflicts with a function of the same name\n",
               name.c_str());
-      exit(2);
+      noteError();
+      return nullptr;
     }
+
 
     Constant *init = ConstantAggregateZero::get(arrTy);
     auto *G = new GlobalVariable(
@@ -3072,14 +3126,101 @@ Value* ArrayDeclAST::codegen() {
   // Local array
   if (lookupLocalCurrent(name)) {
     fprintf(stderr, "Redeclaration of local array '%s'\n", name.c_str());
-    exit(2);
+    noteError();
+    return nullptr;
   }
+
 
   AllocaInst *slot = CreateEntryAlloca(F, name, arrTy);
   Builder.CreateStore(ConstantAggregateZero::get(arrTy), slot);
   NamedValues[name] = slot;
   return slot;
 }
+
+Value* ArrayAccessAST::codegen() {
+  const std::string &name    = getName();
+  const auto        &indices = getIndices();
+
+  Value      *basePtr     = nullptr;
+  Type       *baseTy      = nullptr;
+  AllocaInst *localAlloca = nullptr;
+
+  // Find the base symbol: local array or global
+  if (AllocaInst *local = lookupLocal(name)) {
+    basePtr     = local;
+    baseTy      = local->getAllocatedType();
+    localAlloca = local;
+  } else if (GlobalVariable *global = lookupGlobal(name)) {
+    basePtr = global;
+    baseTy  = global->getValueType();
+  } else {
+    std::string msg = "Unknown array '" + name + "' in access";
+    printErrorAtNode(this, msg.c_str());
+    noteError();
+    return nullptr;
+  }
+
+  Value *elemPtr = nullptr;
+  Type  *elemTy  = nullptr;
+
+  // Case 1: real array variable (int a[5][3])
+  if (isa<ArrayType>(baseTy)) {
+    computeArrayVarElementPtr(
+        name,
+        localAlloca,
+        basePtr,
+        baseTy,
+        indices,
+        elemPtr,
+        elemTy);
+
+  // Case 2: pointer parameter for array argument (int a[10][5] as param)
+  } else if (auto *ptrTy = dyn_cast<PointerType>(baseTy)) {
+    Value *ptrVal = nullptr;
+
+    // For locals we stored the pointer itself in an alloca
+    if (localAlloca) {
+      ptrVal = Builder.CreateLoad(ptrTy, localAlloca, name + "_ptr");
+    } else {
+      // For globals, basePtr is already the pointer value
+      ptrVal = basePtr;
+    }
+
+    auto metaIt = ArrayParamInfo.find(name);
+    if (metaIt == ArrayParamInfo.end()) {
+      fprintf(stderr,
+              "Pointer variable '%s' used in array access is not a known array parameter\n",
+              name.c_str());
+      noteError();
+      return nullptr;
+    }
+
+    Type *metaElemTy = metaIt->second.ElemTy;
+
+    computePointerParamElementPtr(
+        name,
+        ptrVal,
+        metaElemTy,
+        indices,
+        elemPtr,
+        elemTy);
+  } else {
+    std::string msg =
+      "'" + name + "' is not an array or pointer in access";
+    printErrorAtNode(this, msg.c_str());
+    noteError();
+    return nullptr;
+  }
+
+  // Helper failed, do not crash, just stop codegen for this expression
+  if (!elemPtr || !elemTy) {
+    return nullptr;
+  }
+
+  // Load the element value
+  return Builder.CreateLoad(elemTy, elemPtr, name + "_elem_val");
+}
+
 
 
 
@@ -3099,6 +3240,7 @@ Value* BinaryExprAST::codegen() {
   Type* common_type = getCommonType(lhs_type, rhs_type);
 
   int op = getOpTok();
+
   // Logical operators: force both sides to bool first
   if (op == AND || op == OR) {
     lhs = castTo(miniCBoolTy(), lhs, "logical lhs");
@@ -3106,7 +3248,7 @@ Value* BinaryExprAST::codegen() {
 
     if (op == AND) {
       return Builder.CreateAnd(lhs, rhs, "andtmp");
-    } else { // OR
+    } else {
       return Builder.CreateOr(lhs, rhs, "ortmp");
     }
   }
@@ -3115,136 +3257,148 @@ Value* BinaryExprAST::codegen() {
   lhs = castTo(common_type, lhs, "binary lhs");
   rhs = castTo(common_type, rhs, "binary rhs");
 
-  bool useFloat = isFloat(common_type);
+  bool useFloat   = isFloat(common_type);
   bool useIntLike = isInt(common_type) || isBool(common_type);
 
   switch (op) {
-    // ── arithmetic ─────────────────────
+    // arithmetic
     case PLUS:
       if (useFloat)   return Builder.CreateFAdd(lhs, rhs, "addtmp");
       if (useIntLike) return Builder.CreateAdd(lhs, rhs, "addtmp");
       printErrorAtNode(getLHS(), "invalid operand types for '+'");
-      exit(2);
-
+      noteError();
+      return nullptr;
 
     case MINUS:
       if (useFloat)   return Builder.CreateFSub(lhs, rhs, "subtmp");
       if (useIntLike) return Builder.CreateSub(lhs, rhs, "subtmp");
       printErrorAtNode(getLHS(), "invalid operand types for '-'");
-      exit(2);
+      noteError();
+      return nullptr;
 
     case ASTERIX:
       if (useFloat)   return Builder.CreateFMul(lhs, rhs, "multmp");
       if (useIntLike) return Builder.CreateMul(lhs, rhs, "multmp");
       printErrorAtNode(getLHS(), "invalid operand types for '*'");
-      exit(2);
+      noteError();
+      return nullptr;
 
     case DIV:
       if (useFloat)   return Builder.CreateFDiv(lhs, rhs, "divtmp");
       if (useIntLike) return Builder.CreateSDiv(lhs, rhs, "divtmp");
       printErrorAtNode(getLHS(), "invalid operand types for '/'");
-      exit(2);
+      noteError();
+      return nullptr;
 
     case MOD:
       // still forbid float %
       if (useFloat) {
-        printErrorAtNode(getLHS(),
-                         "'%' not defined for float operands");
-        exit(2);
+        printErrorAtNode(getLHS(), "'%' not defined for float operands");
+        noteError();
+        return nullptr;
       }
 
-      // new: forbid bool involvement in '%'
+      // forbid bool involvement in '%'
       if (lhsWasBool || rhsWasBool) {
-        printErrorAtNode(getLHS(),
-                         "'%' not defined for bool operands");
-        exit(2);
+        printErrorAtNode(getLHS(), "'%' not defined for bool operands");
+        noteError();
+        return nullptr;
       }
 
       if (useIntLike) {
         return Builder.CreateSRem(lhs, rhs, "modtmp");
       }
 
-      printErrorAtNode(getLHS(),
-                       "invalid operand types for '%'");
-      exit(2);
+      printErrorAtNode(getLHS(), "invalid operand types for '%'");
+      noteError();
+      return nullptr;
 
-
-
-
-    // ── comparisons (return i1) ────────
+    // comparisons (return i1)
     case LT:
-      if (useFloat) return Builder.CreateFCmpOLT(lhs, rhs, "cmptmp");
+      if (useFloat)   return Builder.CreateFCmpOLT(lhs, rhs, "cmptmp");
       if (useIntLike) return Builder.CreateICmpSLT(lhs, rhs, "cmptmp");
-      fprintf(stderr, "Error: invalid types for '<'\n");
-      exit(2);
+      printErrorAtNode(getLHS(), "invalid operand types for '<'");
+      noteError();
+      return nullptr;
 
     case LE:
-      if (useFloat) return Builder.CreateFCmpOLE(lhs, rhs, "cmptmp");
+      if (useFloat)   return Builder.CreateFCmpOLE(lhs, rhs, "cmptmp");
       if (useIntLike) return Builder.CreateICmpSLE(lhs, rhs, "cmptmp");
-      fprintf(stderr, "Error: invalid types for '<='\n");
-      exit(2);
+      printErrorAtNode(getLHS(), "invalid operand types for '<='");
+      noteError();
+      return nullptr;
 
     case GT:
-      if (useFloat) return Builder.CreateFCmpOGT(lhs, rhs, "cmptmp");
+      if (useFloat)   return Builder.CreateFCmpOGT(lhs, rhs, "cmptmp");
       if (useIntLike) return Builder.CreateICmpSGT(lhs, rhs, "cmptmp");
-      fprintf(stderr, "Error: invalid types for '>'\n");
-      exit(2);
+      printErrorAtNode(getLHS(), "invalid operand types for '>'");
+      noteError();
+      return nullptr;
 
     case GE:
-      if (useFloat) return Builder.CreateFCmpOGE(lhs, rhs, "cmptmp");
+      if (useFloat)   return Builder.CreateFCmpOGE(lhs, rhs, "cmptmp");
       if (useIntLike) return Builder.CreateICmpSGE(lhs, rhs, "cmptmp");
-      fprintf(stderr, "Error: invalid types for '>='\n");
-      exit(2);
+      printErrorAtNode(getLHS(), "invalid operand types for '>='");
+      noteError();
+      return nullptr;
 
     case EQ:
-      if (useFloat) return Builder.CreateFCmpOEQ(lhs, rhs, "cmptmp");
+      if (useFloat)   return Builder.CreateFCmpOEQ(lhs, rhs, "cmptmp");
       if (useIntLike) return Builder.CreateICmpEQ(lhs, rhs, "cmptmp");
       printErrorAtNode(getLHS(), "invalid operand types for '=='");
-      exit(2);
+      noteError();
+      return nullptr;
 
     case NE:
-      if (useFloat) return Builder.CreateFCmpONE(lhs, rhs, "cmptmp");
+      if (useFloat)   return Builder.CreateFCmpONE(lhs, rhs, "cmptmp");
       if (useIntLike) return Builder.CreateICmpNE(lhs, rhs, "cmptmp");
       printErrorAtNode(getLHS(), "invalid operand types for '!='");
-      exit(2);
+      noteError();
+      return nullptr;
 
     default:
-      fprintf(stderr, "Error: Unknown binary operator token %d\n", op);
-      exit(2);
+      printErrorAtNode(this, "unknown binary operator");
+      noteError();
+      return nullptr;
   }
-
-  // unreachable, but keeps compiler happy
-  return nullptr;
 }
-
 
 Value *GlobVarDeclAST::codegen() {
   // MINIC_RULE_GLOBAL_ONCE
   const std::string &name = getName();
-  llvm::Type *ty = typeFromString(getType());
 
-  // check for redeclaration
+  // Look up LLVM type for this MiniC type name
+  llvm::Type *varTy = typeFromString(getType());
+  if (!varTy) {
+    // typeFromString already printed an error and bumped ErrorCount
+    return nullptr;
+  }
+
+  // Check for redeclaration
   if (lookupGlobal(name) || GlobalNamedValues.count(name)) {
-    fprintf(stderr, "Redeclaration of global '%s'\n", name.c_str());
-    exit(2);
+    std::string msg =
+      "Redeclaration of global '" + name + "'";
+    reportNodeError(Var.get(), msg.c_str());   // report at variable site
+    return nullptr;
   }
 
   // Disallow a global with the same name as a function
   if (TheModule->getFunction(name)) {
-    fprintf(stderr,
-            "Global variable '%s' conflicts with a function of the same name\n",
-            name.c_str());
-    exit(2);
+    std::string msg =
+      "Global variable '" + name +
+      "' conflicts with a function of the same name";
+    reportNodeError(Var.get(), msg.c_str());
+    return nullptr;
   }
 
+  // Default initialiser is zero for this type
+  Constant *init = zeroOf(varTy);
 
-  llvm::Constant *init = zeroOf(ty);
-
-  auto *G = new llvm::GlobalVariable(
+  auto *G = new GlobalVariable(
       *TheModule,
-      ty,
+      varTy,
       /*isConstant=*/false,
-      llvm::GlobalValue::ExternalLinkage,
+      GlobalValue::ExternalLinkage,
       init,
       name);
 
@@ -3253,20 +3407,25 @@ Value *GlobVarDeclAST::codegen() {
 }
 
 
+
 Value* FunctionDeclAST::codegen() {
     const std::string &function_name = Proto->getName();
 
     // Disallow a function with the same name as a global variable
     if (lookupGlobal(function_name)) {
-        fprintf(stderr,
-                "Function '%s' conflicts with a global variable of the same name\n",
-                function_name.c_str());
-        exit(2);
+      std::string msg =
+        "Function '" + function_name +
+        "' conflicts with a global variable of the same name";
+      reportNodeError(this, msg.c_str());
+      return nullptr;
     }
-
 
     // Build the expected LLVM type from the prototype
     FunctionType* function_type = functionTypeFromProto(Proto.get());
+    if (!function_type) {
+        // functionTypeFromProto already reports and notes errors
+        return nullptr;
+    }
 
     // Look up any existing declaration or definition
     Function* F = TheModule->getFunction(function_name);
@@ -3274,17 +3433,19 @@ Value* FunctionDeclAST::codegen() {
     if (F) {
         // Type must match the prototype
         if (F->getFunctionType() != function_type) {
-            fprintf(stderr,
-                    "Definition of function '%s' does not match a previous declaration\n",
-                    function_name.c_str());
-            exit(2);
+            std::string msg =
+              "Definition of function '" + function_name +
+              "' does not match a previous declaration";
+            reportNodeError(this, msg.c_str());
+            return nullptr;
         }
 
         // Do not allow more than one definition
         if (!F->empty()) {
-            fprintf(stderr, "Redefinition of function '%s'\n",
-                    function_name.c_str());
-            exit(2);
+            std::string msg =
+              "Redefinition of function '" + function_name + "'";
+            reportNodeError(this, msg.c_str());
+            return nullptr;
         }
     } else {
         // No previous declaration, create a new one
@@ -3311,8 +3472,6 @@ Value* FunctionDeclAST::codegen() {
 
     // Allocate each argument in the entry block and store the value
     idx = 0;
-        // Allocate each argument in the entry block and store the value
-    idx = 0;
     for (auto &arg : F->args()) {
         std::string argName = std::string(arg.getName());
         Type *argType = arg.getType();
@@ -3326,6 +3485,10 @@ Value* FunctionDeclAST::codegen() {
         const ParamAST *param = paramUPtr.get();
         if (param->isArrayParam()) {
             Type *baseTy = typeFromString(param->getType());
+            if (!baseTy) {
+                // typeFromString already reported the error
+                return nullptr;
+            }
             const auto &dims = param->getDims();
 
             // Element type that the parameter pointer points to
@@ -3344,7 +3507,6 @@ Value* FunctionDeclAST::codegen() {
         ++idx;
     }
 
-
     // Generate code for the body block
     if (Block) {
         Block->codegen();
@@ -3362,10 +3524,12 @@ Value* FunctionDeclAST::codegen() {
 
     // Verify the function
     if (verifyFunction(*F, &errs())) {
-        fprintf(stderr, "Function verification failed for '%s'\n",
-                function_name.c_str());
-        F->print(errs());
-        exit(2);
+      const char *fname = InputFileName ? InputFileName : "<input>";
+      fprintf(stderr,
+              "\033[1m%s:\033[0m \033[1;31merror:\033[0m invalid generated code for function '%s'\n",
+              fname, function_name.c_str());
+      noteError();
+      return nullptr;
     }
 
     return F;
@@ -3376,21 +3540,25 @@ Value* CallExprAST::codegen() {
   // Look up the function in the module
   Function* calleeF = TheModule->getFunction(Callee);
   if (!calleeF) {
-    fprintf(stderr, "Unknown function '%s' in call\n", Callee.c_str());
-    exit(2);
+    std::string msg = "Unknown function '" + Callee + "' in call";
+    printErrorAtNode(this, msg.c_str());
+    noteError();
+    return nullptr;
   }
 
   // Check argument count
   // MINIC_RULE_NO_VARARGS
   if (calleeF->arg_size() != Args.size()) {
-    fprintf(stderr, "Function '%s' expects %u args, got %zu\n",
-            Callee.c_str(),
-            static_cast<unsigned>(calleeF->arg_size()),
-            Args.size());
-    exit(2);
+    std::string msg =
+      "Function '" + Callee + "' expects " +
+      std::to_string(static_cast<unsigned>(calleeF->arg_size())) +
+      " args, got " + std::to_string(Args.size());
+    printErrorAtNode(this, msg.c_str());
+    noteError();
+    return nullptr;
   }
 
-  // Generate and type-check each argument
+  // Generate and type check each argument
   std::vector<Value*> argValues;
   argValues.reserve(Args.size());
 
@@ -3405,69 +3573,59 @@ Value* CallExprAST::codegen() {
     Type* srcTy = argVal->getType();
     if (srcTy != paramTy) {
       if (!isWideningType(srcTy, paramTy)) {
-        std::string msg = "illegal narrowing in call to '" + Callee +
-                          "' for argument " + std::to_string(idx);
+        std::string msg =
+          "illegal narrowing in call to '" + Callee +
+          "' for argument " + std::to_string(idx);
         printErrorAtNode(argExpr.get(), msg.c_str());
         errs() << "  parameter type: "; paramTy->print(errs());
         errs() << "\n  argument type:  "; srcTy->print(errs());
         errs() << "\n";
-        exit(2);
+        noteError();
+        return nullptr;
       }
       argVal = castTo(paramTy, argVal, "callarg");
     }
-
-    // existing widening check
-    if (srcTy != paramTy) {
-        if (!isWideningType(srcTy, paramTy)) {
-            std::string msg =
-                "illegal narrowing in call to '" + Callee +
-                "' for argument " + std::to_string(idx);
-            printErrorAtNode(argExpr.get(), msg.c_str());
-            errs() << "  parameter type: "; paramTy->print(errs());
-            errs() << "\n  argument type:  "; srcTy->print(errs());
-            errs() << "\n";
-            exit(2);
-        }
-        argVal = castTo(paramTy, argVal, "callarg");
-    }
-
 
     argValues.push_back(argVal);
     ++idx;
   }
 
   // Emit the call
-  CallInst* callInst = Builder.CreateCall(calleeF, argValues,
-                                          calleeF->getReturnType()->isVoidTy()
-                                            ? ""
-                                            : "calltmp");
+  CallInst* callInst = Builder.CreateCall(
+      calleeF,
+      argValues,
+      calleeF->getReturnType()->isVoidTy() ? "" : "calltmp"
+  );
 
   // For void functions, you still return the CallInst as the Value*
   return callInst;
 }
 
 
+
 Value* IfExprAST::codegen() {
     Value* condV = Cond->codegen();
     if (!condV) return nullptr;
-    condV = castTo(miniCBoolTy(), condV, "ifcond"); // MINIC_RULE_COND_BOOL_CAST
+    condV = castTo(miniCBoolTy(), condV, "ifcond");
 
     BasicBlock* curBB = Builder.GetInsertBlock();
     if (!curBB) {
         fprintf(stderr, "IfExprAST used with no insertion block\n");
-        exit(2);
+        noteError();
+        return nullptr;
     }
 
     Function* F = curBB->getParent();
     if (!F) {
         fprintf(stderr, "IfExprAST used outside of a function\n");
-        exit(2);
+        noteError();
+        return nullptr;
     }
 
-    // Attach all blocks to the function when you create them
     BasicBlock* thenBB  = BasicBlock::Create(TheContext, "if.then", F);
     BasicBlock* elseBB  = Else ? BasicBlock::Create(TheContext, "if.else", F) : nullptr;
-    BasicBlock* mergeBB = BasicBlock::Create(TheContext, "if.end",  F);
+    // Do not attach mergeBB yet
+    BasicBlock* mergeBB = BasicBlock::Create(TheContext, "if.end");
 
     if (Else)
         Builder.CreateCondBr(condV, thenBB, elseBB);
@@ -3477,19 +3635,39 @@ Value* IfExprAST::codegen() {
     // Then block
     Builder.SetInsertPoint(thenBB);
     if (Then) Then->codegen();
-    if (!Builder.GetInsertBlock()->getTerminator())
+    if (!Builder.GetInsertBlock()->getTerminator()) {
         Builder.CreateBr(mergeBB);
+    }
+    bool thenFallsThrough =
+        thenBB->getTerminator() &&
+        thenBB->getTerminator()->getOpcode() == Instruction::Br &&
+        thenBB->getTerminator()->getSuccessor(0) == mergeBB;
 
-    // Else block, if present
+    // Else block
+    bool elseFallsThrough = false;
     if (Else) {
         Builder.SetInsertPoint(elseBB);
         Else->codegen();
-        if (!Builder.GetInsertBlock()->getTerminator())
+        if (!Builder.GetInsertBlock()->getTerminator()) {
             Builder.CreateBr(mergeBB);
+        }
+        elseFallsThrough =
+            elseBB->getTerminator() &&
+            elseBB->getTerminator()->getOpcode() == Instruction::Br &&
+            elseBB->getTerminator()->getSuccessor(0) == mergeBB;
     }
 
-    // Merge block
-    Builder.SetInsertPoint(mergeBB);
+    // Attach mergeBB only if some path uses it
+    if (thenFallsThrough || elseFallsThrough || !Else) {
+        // Insert mergeBB as a block of F
+        mergeBB->insertInto(F);
+        Builder.SetInsertPoint(mergeBB);
+    } else {
+        // Both branches ended in return or other terminator
+        delete mergeBB;
+        // Leave Builder insertion point wherever it stands
+    }
+
     return nullptr;
 }
 
@@ -3498,13 +3676,15 @@ Value* WhileExprAST::codegen() {
     BasicBlock* curBB = Builder.GetInsertBlock();
     if (!curBB) {
       fprintf(stderr, "WhileExprAST used with no insertion block\n");
-      exit(2);
+      noteError();
+      return nullptr;
     }
 
     Function* F = curBB->getParent();
     if (!F) {
       fprintf(stderr, "WhileExprAST used outside of a function\n");
-      exit(2);
+      noteError();
+      return nullptr;
     }
 
     // Attach all blocks to F when created
@@ -3541,13 +3721,15 @@ Value* ReturnAST::codegen() {
     BasicBlock* currBB = Builder.GetInsertBlock();
     if (!currBB) {
         fprintf(stderr, "ReturnAST used without any insertion block\n");
-        exit(2);
+        noteError();
+        return nullptr;
     }
 
     Function* F = currBB->getParent();
     if (!F) {
         fprintf(stderr, "ReturnAST used outside of a function\n");
-        exit(2);
+        noteError();
+        return nullptr;
     }
 
     Type* func_return_type = F->getReturnType();
@@ -3555,8 +3737,9 @@ Value* ReturnAST::codegen() {
     // "return;" with no value
     if (!Val) {
         if (!func_return_type->isVoidTy()) {
-            fprintf(stderr, "Non-void function missing return value\n");
-            exit(2);
+            printErrorAtNode(this, "Non-void function missing return value");
+            noteError();
+            return nullptr;
         }
         return Builder.CreateRetVoid();
     }
@@ -3574,13 +3757,15 @@ Value* ReturnAST::codegen() {
             errs() << "  function return type: "; func_return_type->print(errs());
             errs() << "\n  expression type:      "; srcTy->print(errs());
             errs() << "\n";
-            exit(2);
+            noteError();
+            return nullptr;
         }
         return_val = castTo(func_return_type, return_val, "ret");
     }
 
     return Builder.CreateRet(return_val);
 }
+
 
 // ======== Literal codegen ========
 
@@ -3616,9 +3801,12 @@ Value* VariableASTnode::codegen() {
     return Builder.CreateLoad(ty, global, name + "_val");
   }
 
-  fprintf(stderr, "Unknown variable '%s'\n", name.c_str());
-  exit(2);
+  std::string msg = "Unknown variable '" + name + "'";
+  printErrorAtNode(this, msg.c_str());
+  noteError();
+  return nullptr;
 }
+
 
 // ======== Unary operator codegen ========
 
@@ -3643,8 +3831,10 @@ Value* UnaryExprAST::codegen() {
         return Builder.CreateNeg(operandV, "negtmp");
       }
 
-      fprintf(stderr, "Invalid operand type for unary '-'\n");
-      exit(2);
+      printErrorAtNode(Operand.get(),
+                       "Invalid operand type for unary '-'");
+      noteError();
+      return nullptr;
     }
 
     case '!': {
@@ -3653,39 +3843,45 @@ Value* UnaryExprAST::codegen() {
       return Builder.CreateNot(boolV, "nottmp");
     }
 
-    default:
-      fprintf(stderr, "Unknown unary operator '%c'\n", Op);
-      exit(2);
+    default: {
+      std::string msg = "Unknown unary operator '";
+      msg += static_cast<char>(Op);
+      msg += "'";
+      printErrorAtCurrent(msg.c_str());
+      noteError();
+      return nullptr;
+    }
   }
 
   return nullptr;
 }
+
 
 // ======== Assignment codegen (scalar variables) ========
 
 Value* AssignAST::codegen() {
   const std::string &name = LHS->getName();
 
-  AllocaInst* local = lookupLocal(name);
-  GlobalVariable* global = lookupGlobal(name);
+  AllocaInst    *local  = lookupLocal(name);
+  GlobalVariable*global = lookupGlobal(name);
 
   if (!local && !global) {
     std::string msg = "Assignment to unknown variable '" + name + "'";
     printErrorAtNode(LHS.get(), msg.c_str());
-    exit(2);
+    noteError();
+    return nullptr;
   }
-
 
   // pointer to storage and declared type
   Value* destPtr = nullptr;
-  Type* varTy = nullptr;
+  Type*  varTy   = nullptr;
 
   if (local) {
     destPtr = local;
-    varTy = local->getAllocatedType();
+    varTy   = local->getAllocatedType();
   } else {
     destPtr = global;
-    varTy = global->getValueType();
+    varTy   = global->getValueType();
   }
 
   // compute RHS value
@@ -3697,16 +3893,17 @@ Value* AssignAST::codegen() {
   // enforce widening only
   if (rhsTy != varTy) {
     if (!isWideningType(rhsTy, varTy)) {
-      std::string msg = "illegal narrowing in assignment to '" + name + "'";
+      std::string msg =
+        "illegal narrowing in assignment to '" + name + "'";
       printErrorAtNode(RHS.get(), msg.c_str());
       errs() << "  variable type: "; varTy->print(errs());
       errs() << "\n  value type:    "; rhsTy->print(errs());
       errs() << "\n";
-      exit(2);
+      noteError();
+      return nullptr;
     }
     rhsV = castTo(varTy, rhsV, "assign");
   }
-
 
   Builder.CreateStore(rhsV, destPtr);
   return rhsV;
@@ -3853,6 +4050,8 @@ static void loadSourceFile(const char *filename) {
 
 int main(int argc, char **argv) {
   if (argc == 2) {
+    InputFileName = argv[1];        // add this line
+
     // New: read whole file into memory for error snippets
     loadSourceFile(argv[1]);
 
@@ -3881,21 +4080,28 @@ int main(int argc, char **argv) {
   parser();
   fprintf(stderr, "Parsing Finished\n");
 
-    // ---- Dump AST ----
-  fprintf(stderr, "=== AST (externs) ===\n");
-  for (auto& ex : gExterns) {
-    fprintf(stderr, "Extern %s : %s (params=%d)\n",
-      ex->getName().c_str(), ex->getType().c_str(), ex->getSize());
-    for (auto& p : ex->getParams()) {
-      fprintf(stderr, "  - %s %s\n", p->getType().c_str(), p->getName().c_str());
-    }
+  if (ErrorCount > 0) {
+    fprintf(stderr, "%d error(s) generated.\n", ErrorCount);
+    fclose(pFile);
+    return 1;
   }
 
-  for (auto& d : gTopDecls) {
-    if (d) {
-      llvm::outs() << *d << "\n";
-    }
-  }
+
+    // ---- Dump AST ----
+  // fprintf(stderr, "=== AST (externs) ===\n");
+  // for (auto& ex : gExterns) {
+  //   fprintf(stderr, "Extern %s : %s (params=%d)\n",
+  //     ex->getName().c_str(), ex->getType().c_str(), ex->getSize());
+  //   for (auto& p : ex->getParams()) {
+  //     fprintf(stderr, "  - %s %s\n", p->getType().c_str(), p->getName().c_str());
+  //   }
+  // }
+
+  // for (auto& d : gTopDecls) {
+  //   if (d) {
+  //     llvm::outs() << *d << "\n";
+  //   }
+  // }
 
   // Make the module, which holds all the code.
   TheModule = std::make_unique<Module>("mini-c", TheContext);
@@ -3930,6 +4136,12 @@ int main(int argc, char **argv) {
     }
   }
 
+  if (ErrorCount > 0) {
+    fprintf(stderr, "%d error(s) generated.\n", ErrorCount);
+    fclose(pFile);
+    return 1;
+  }
+
 
   // Run the parser now.
 
@@ -3949,6 +4161,7 @@ int main(int argc, char **argv) {
     errs() << "Could not open file: " << EC.message();
     return 1;
   }
+
   // TheModule->print(errs(), nullptr); // print IR to terminal
   TheModule->print(dest, nullptr);
   printf(
