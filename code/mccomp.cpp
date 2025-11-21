@@ -59,7 +59,9 @@ static void noteError() {
 }
 
 static bool TraceParser = false;  // set true if you want verbose parser trace
-static bool PrintAST = true;  // set true if you want verbose parser trace
+static bool PrintAST = true;  // set true if you want to print the AST
+static bool PrintIR = true; // Global toggle for IR printing to stderr
+
 
 //===----------------------------------------------------------------------===//
 // Lexer
@@ -868,21 +870,29 @@ public:
 
 /// CallExprAST - Expression class for function calls
 class CallExprAST : public ASTnode {
-  std::string Callee;                         // Function name
-  std::vector<std::unique_ptr<ASTnode>> Args; // Arguments
+  TOKEN CalleeTok;                              // token for function name
+  std::string Callee;                          // Function name
+  std::vector<std::unique_ptr<ASTnode>> Args;  // Arguments
 
 public:
-  CallExprAST(const std::string &callee, 
+  CallExprAST(TOKEN calleeTok,
+              const std::string &callee,
               std::vector<std::unique_ptr<ASTnode>> args)
-      : Callee(callee), Args(std::move(args)) {}
-  
+      : CalleeTok(calleeTok),
+        Callee(callee),
+        Args(std::move(args)) {}
+
   const std::string &getCallee() const { return Callee; }
-  const std::vector<std::unique_ptr<ASTnode>>& getArgs() const { return Args; }
-  
+  const std::vector<std::unique_ptr<ASTnode>> &getArgs() const { return Args; }
+
+  int getLine() const override { return CalleeTok.lineNo; }
+  int getCol()  const override { return CalleeTok.columnNo; }
+
   Value *codegen() override;
-  std::string toExprString() const override; 
-  void to_string_inner(std::string& out, int indent) const override;  
+  std::string toExprString() const override;
+  void to_string_inner(std::string &out, int indent) const override;
 };
+
 
 /// BlockAST - Class for a block with declarations followed by statements
 class BlockAST : public ASTnode {
@@ -1534,7 +1544,7 @@ static std::unique_ptr<ASTnode> ParsePrimary() {
         if (CurTok.type != RPAR)
           return LogError(CurTok, "expected ')' after arguments");
         getNextToken(); // eat ')'
-        return std::make_unique<CallExprAST>(name, std::move(args));
+        return std::make_unique<CallExprAST>(identTok, name, std::move(args));
       }
 
       // array element access: name[...][...]...
@@ -2845,10 +2855,11 @@ Value* VarDeclAST::codegen() {
 
   const std::string& name = getName();
   if (lookupLocalCurrent(name)) {
-    fprintf(stderr, "Redeclaration of local '%s'\n", name.c_str());
-    noteError();
+    std::string msg = "Redeclaration of local '" + name + "'";
+    reportNodeError(Var.get(), msg.c_str());
     return nullptr;
   }
+
 
   Type* ty = typeFromString(getType());
   if (!ty) {
@@ -2863,41 +2874,18 @@ Value* VarDeclAST::codegen() {
 }
 
 
-
-
 // ============================================================================
-// Array helpers: index checking, base resolution, element GEP, and codegen
+// Array helpers: compute element address for arrays and array parameters
 // ============================================================================
 
-
-// ----------------------------------------------------------------------------
-// Index helpers
-// ----------------------------------------------------------------------------
-
-/**
- * Ensure at least one index is supplied for an array access.
- * Reports an error and returns false if no indices are provided.
- */
-static bool ensureArrayAccessHasIndex(
+static bool codegenIndexAsInt(
     const std::string &name,
-    const std::vector<std::unique_ptr<ASTnode>> &indices) {
+    ASTnode *idxNode,
+    Value *&idxVal) {
 
-  if (!indices.empty()) return true;
-
-  std::string msg = "array access on '" + name + "' needs at least one index";
-  printCodegenErrorAtNode(nullptr, msg.c_str());
-  return false;
-}
-
-/**
- * Generate an index value and require exact int type.
- * Returns false on error and leaves idxVal unspecified.
- */
-static bool codegenAndCheckIndex(const std::string &name, ASTnode *idxNode, Value *&idxVal) {
   idxVal = idxNode->codegen();
   if (!idxVal) {
-    fprintf(stderr, "Internal error: null index codegen for '%s'\n", name.c_str());
-    noteError();
+    // Index expression already reported an error
     return false;
   }
 
@@ -2907,236 +2895,103 @@ static bool codegenAndCheckIndex(const std::string &name, ASTnode *idxNode, Valu
     printCodegenErrorAtNode(idxNode, msg.c_str());
     return false;
   }
+
   return true;
 }
 
 
-// ----------------------------------------------------------------------------
-// Element pointer helpers for real arrays and pointer parameters
-// ----------------------------------------------------------------------------
-
-/**
- * Compute element pointer for a real array variable (ArrayType).
- * Validates index count and types and builds a multi-dimensional GEP.
- */
-static void computeArrayVarElementPtr(
+// Compute address and element type for any array-style access:
+//
+//   - plain local/global arrays (alloca or global of ArrayType)
+//   - pointer parameters which represent arrays (ArrayParamInfo)
+//
+// On success:
+//   elemPtr is a pointer to element
+//   elemTy is element type
+//
+// On failure it reports an error and returns false.
+static bool getArrayElementAddress(
     const std::string &name,
-    AllocaInst *localAlloca,
-    Value *basePtr,
-    Type *baseTy,
     const std::vector<std::unique_ptr<ASTnode>> &indices,
+    ASTnode *loc,
     Value *&elemPtr,
     Type *&elemTy) {
 
   elemPtr = nullptr;
   elemTy  = nullptr;
 
-  if (!ensureArrayAccessHasIndex(name, indices)) return;
-
-  if (!isa<ArrayType>(baseTy)) {
-    fprintf(stderr, "Internal error: '%s' is not an array type\n", name.c_str());
-    noteError();
-    return;
+  if (indices.empty()) {
+    std::string msg = "array access on '" + name + "' needs at least one index";
+    printCodegenErrorAtNode(loc, msg.c_str());
+    return false;
   }
 
-  std::vector<Value*> gepIdx;
-  // For a real array value, first index is always 0
-  gepIdx.push_back(ConstantInt::get(getIntTy(), 0));
-
-  Type *curTy = baseTy;
-
-  for (size_t i = 0; i < indices.size(); ++i) {
-    if (!isa<ArrayType>(curTy)) {
-      std::string msg = "too many indices supplied for array '" + name + "'";
-      printCodegenErrorAtNode(indices[i].get(), msg.c_str());
-      return;
-    }
-
-    Value *idxVal = nullptr;
-    if (!codegenAndCheckIndex(name, indices[i].get(), idxVal)) return;
-
-    gepIdx.push_back(idxVal);
-    curTy = cast<ArrayType>(curTy)->getElementType();
-  }
-
-  if (isa<ArrayType>(curTy)) {
-    std::string msg = "too few indices supplied for array '" + name + "'";
-    printCodegenErrorAtNode(indices.back().get(), msg.c_str());
-    return;
-  }
-
-  elemTy = curTy;
-
-  elemPtr = Builder.CreateInBoundsGEP(
-      baseTy,
-      localAlloca ? static_cast<Value*>(localAlloca) : basePtr,
-      gepIdx,
-      name + "_elem_ptr");
-}
-
-/**
- * Compute element pointer for an array parameter passed as a pointer.
- * Handles 1D pointers and multi-dimensional pointer-to-array parameters.
- */
-static void computePointerParamElementPtr(
-    const std::string &name,
-    Value *ptrVal,
-    Type *metaElemTy,
-    const std::vector<std::unique_ptr<ASTnode>> &indices,
-    Value *&elemPtr,
-    Type *&elemTy) {
-
-  elemPtr = nullptr;
-  elemTy  = nullptr;
-
-  if (!ensureArrayAccessHasIndex(name, indices)) return;
-
-  // 1D pointer parameter
-  if (!isa<ArrayType>(metaElemTy)) {
-    if (indices.size() != 1) {
-      ASTnode *locNode = indices[indices.size() > 1 ? 1 : 0].get();
-      std::string msg = "too many indices for 1D pointer '" + name + "'";
-      printCodegenErrorAtNode(locNode, msg.c_str());
-      return;
-    }
-
-    Value *idxVal = nullptr;
-    if (!codegenAndCheckIndex(name, indices[0].get(), idxVal)) return;
-
-    elemTy = metaElemTy;
-    elemPtr = Builder.CreateInBoundsGEP(
-        metaElemTy,
-        ptrVal,
-        std::vector<Value*>{ idxVal },
-        name + "_elem_ptr");
-    return;
-  }
-
-  // 2D/3D pointer-to-array parameter
-  Type *curElemTy = metaElemTy;
-  std::vector<Value*> gepIdx;
-
-  Value *firstIdx = nullptr;
-  if (!codegenAndCheckIndex(name, indices[0].get(), firstIdx)) return;
-  gepIdx.push_back(firstIdx);
-
-  for (size_t i = 1; i < indices.size(); ++i) {
-    if (!isa<ArrayType>(curElemTy)) {
-      std::string msg = "too many indices for pointer-to-array '" + name + "'";
-      printCodegenErrorAtNode(indices[i].get(), msg.c_str());
-      return;
-    }
-
-    Value *idxVal = nullptr;
-    if (!codegenAndCheckIndex(name, indices[i].get(), idxVal)) return;
-
-    gepIdx.push_back(idxVal);
-    curElemTy = cast<ArrayType>(curElemTy)->getElementType();
-  }
-
-  if (isa<ArrayType>(curElemTy)) {
-    std::string msg = "too few indices for pointer-to-array '" + name + "'";
-    printCodegenErrorAtNode(indices.back().get(), msg.c_str());
-    return;
-  }
-
-  elemTy = curElemTy;
-  elemPtr = Builder.CreateInBoundsGEP(
-      metaElemTy,
-      ptrVal,
-      gepIdx,
-      name + "_elem_ptr");
-}
-
-
-// ----------------------------------------------------------------------------
-// Shared array resolution helpers
-// ----------------------------------------------------------------------------
-
-/**
- * Resolve an array name to its base pointer and type.
- * Looks in locals then globals. Reports an error if the name is unknown.
- */
-static bool resolveArrayBase(
-    const std::string &name,
-    ASTnode *errNode,
-    const char *unknownContext,
-    Value *&basePtr,
-    Type *&baseTy,
-    AllocaInst *&localAlloca) {
-
-  basePtr     = nullptr;
-  baseTy      = nullptr;
-  localAlloca = nullptr;
+  // Find base symbol
+  Value      *basePtr     = nullptr;
+  Type       *baseTy      = nullptr;
+  AllocaInst *localAlloca = nullptr;
 
   if (AllocaInst *local = lookupLocal(name)) {
     basePtr     = local;
     baseTy      = local->getAllocatedType();
     localAlloca = local;
-    return true;
-  }
-
-  if (GlobalVariable *global = lookupGlobal(name)) {
+  } else if (GlobalVariable *global = lookupGlobal(name)) {
     basePtr = global;
     baseTy  = global->getValueType();
-    return true;
-  }
-
-  std::string msg = "Unknown array '" + name + "' ";
-  msg += unknownContext;
-  printErrorAtNode(errNode, msg.c_str());
-  noteError();
-  return false;
-}
-
-/**
- * Compute element pointer and element type for:
- *   - real array variables
- *   - pointer parameters that represent arrays.
- * Used by array access and array assignment.
- */
-static bool resolveArrayElementPtr(
-    const std::string &name,
-    ASTnode *errNode,
-    const std::vector<std::unique_ptr<ASTnode>> &indices,
-    const char *unknownContext,
-    const char *ptrParamContext,
-    const char *notArrayOrPtrContext,
-    Value *&elemPtr,
-    Type *&elemTy) {
-
-  elemPtr = nullptr;
-  elemTy  = nullptr;
-
-  Value      *basePtr     = nullptr;
-  Type       *baseTy      = nullptr;
-  AllocaInst *localAlloca = nullptr;
-
-  if (!resolveArrayBase(
-          name,
-          errNode,
-          unknownContext,
-          basePtr,
-          baseTy,
-          localAlloca)) {
+  } else {
+    std::string msg = "Unknown array '" + name + "'";
+    printErrorAtNode(loc, msg.c_str());
+    noteError();
     return false;
   }
 
-  if (isa<ArrayType>(baseTy)) {
-    // Real array variable
-    computeArrayVarElementPtr(
-        name,
-        localAlloca,
-        basePtr,
+  // Case 1: real array variable (local or global)
+  if (auto *arrTy = dyn_cast<ArrayType>(baseTy)) {
+    std::vector<Value*> gepIdx;
+    // For real arrays first GEP index is zero to step from alloca/global
+    gepIdx.push_back(ConstantInt::get(getIntTy(), 0));
+
+    Type *curTy = baseTy;
+
+    for (size_t i = 0; i < indices.size(); ++i) {
+      if (!isa<ArrayType>(curTy)) {
+        std::string msg = "too many indices supplied for array '" + name + "'";
+        printCodegenErrorAtNode(indices[i].get(), msg.c_str());
+        return false;
+      }
+
+      Value *idxVal = nullptr;
+      if (!codegenIndexAsInt(name, indices[i].get(), idxVal)) return false;
+
+      gepIdx.push_back(idxVal);
+      curTy = cast<ArrayType>(curTy)->getElementType();
+    }
+
+    if (isa<ArrayType>(curTy)) {
+      std::string msg = "too few indices supplied for array '" + name + "'";
+      printCodegenErrorAtNode(indices.back().get(), msg.c_str());
+      return false;
+    }
+
+    elemTy = curTy;
+
+    Value *baseVal = localAlloca
+                     ? static_cast<Value*>(localAlloca)
+                     : basePtr;
+
+    elemPtr = Builder.CreateInBoundsGEP(
         baseTy,
-        indices,
-        elemPtr,
-        elemTy);
+        baseVal,
+        gepIdx,
+        name + std::string("_elem_ptr"));
 
-  } else if (auto *ptrTy = dyn_cast<PointerType>(baseTy)) {
-    // Pointer parameter representing an array
+    return elemPtr != nullptr;
+  }
+
+  // Case 2: pointer parameter which represents an array
+  if (auto *ptrTy = dyn_cast<PointerType>(baseTy)) {
+    // Load actual runtime pointer if this is a local alloca for the param
     Value *ptrVal = nullptr;
-
     if (localAlloca) {
       ptrVal = Builder.CreateLoad(ptrTy, localAlloca, name + "_ptr");
     } else {
@@ -3146,34 +3001,65 @@ static bool resolveArrayElementPtr(
     auto metaIt = ArrayParamInfo.find(name);
     if (metaIt == ArrayParamInfo.end()) {
       fprintf(stderr,
-              "Pointer variable '%s' used in %s is not a known array parameter\n",
-              name.c_str(),
-              ptrParamContext);
+              "Pointer variable '%s' used in array access is not a known array parameter\n",
+              name.c_str());
       noteError();
       return false;
     }
 
     Type *metaElemTy = metaIt->second.ElemTy;
+    Type *curElemTy  = metaElemTy;
 
-    computePointerParamElementPtr(
-        name,
-        ptrVal,
+    std::vector<Value*> gepIdx;
+
+    // First index steps on pointer itself
+    Value *firstIdx = nullptr;
+    if (!codegenIndexAsInt(name, indices[0].get(), firstIdx)) return false;
+    gepIdx.push_back(firstIdx);
+
+    // Remaining indices walk nested ArrayType structure if present
+    for (size_t i = 1; i < indices.size(); ++i) {
+      if (!isa<ArrayType>(curElemTy)) {
+        std::string msg = "too many indices for pointer parameter '" + name + "'";
+        printCodegenErrorAtNode(indices[i].get(), msg.c_str());
+        return false;
+      }
+
+      Value *idxVal = nullptr;
+      if (!codegenIndexAsInt(name, indices[i].get(), idxVal)) return false;
+
+      gepIdx.push_back(idxVal);
+      curElemTy = cast<ArrayType>(curElemTy)->getElementType();
+    }
+
+    if (isa<ArrayType>(curElemTy)) {
+      std::string msg = "too few indices for pointer parameter '" + name + "'";
+      printCodegenErrorAtNode(indices.back().get(), msg.c_str());
+      return false;
+    }
+
+    elemTy = curElemTy;
+
+    elemPtr = Builder.CreateInBoundsGEP(
         metaElemTy,
-        indices,
-        elemPtr,
-        elemTy);
+        ptrVal,
+        gepIdx,
+        name + std::string("_elem_ptr"));
 
-  } else {
-    std::string msg = "'" + name + "' is not an array or pointer in ";
-    msg += notArrayOrPtrContext;
-    printErrorAtNode(errNode, msg.c_str());
+    return elemPtr != nullptr;
+  }
+
+  // Not an array or pointer
+  {
+    std::string msg = "'" + name + "' is not an array or pointer";
+    printErrorAtNode(loc, msg.c_str());
     noteError();
     return false;
   }
-
-  if (!elemPtr || !elemTy) return false;
-  return true;
 }
+
+// Forward declaration for widening helper used by array assignments
+static Value *widenOrError(Value *v, Type *targetTy, ASTnode *loc, const char *contextPrefix);
 
 
 // ----------------------------------------------------------------------------
@@ -3185,45 +3071,38 @@ static bool resolveArrayElementPtr(
  * Resolve LHS element pointer, widen RHS if allowed, then store.
  */
 Value *ArrayAssignAST::codegen() {
-  ArrayAccessAST *lhs        = getLHS();
-  const std::string &name    = lhs->getName();
-  const auto        &indices = lhs->getIndices();
+  const std::string &name    = LHS->getName();
+  const auto        &indices = LHS->getIndices();
 
   Value *elemPtr = nullptr;
   Type  *elemTy  = nullptr;
 
-  if (!resolveArrayElementPtr(
-          name,
-          lhs,
-          indices,
-          "in assignment",
-          "array assignment",
-          "assignment",
-          elemPtr,
-          elemTy)) {
+  // Compute address of the array element
+  if (!getArrayElementAddress(name, indices, LHS.get(), elemPtr, elemTy)) {
+    // getArrayElementAddress already reported an error
     return nullptr;
   }
 
-  Value *rhs = getRHS()->codegen();
-  if (!rhs) return nullptr;
+  // Generate RHS expression
+  Value *rhsV = RHS->codegen();
+  if (!rhsV) return nullptr;
 
-  Type *srcTy = rhs->getType();
-  if (srcTy != elemTy) {
-    if (!isWideningType(srcTy, elemTy)) {
-      std::string msg =
-        "illegal narrowing in array assignment to '" + name + "'";
-      printErrorAtNode(getRHS(), msg.c_str());
-      errs() << "  element type: "; elemTy->print(errs());
-      errs() << "\n  value type:   "; srcTy->print(errs());
-      errs() << "\n";
-      noteError();
-      return nullptr;
-    }
-    rhs = castTo(elemTy, rhs, "arrayassign");
+  // Disallow assigning array or pointer values to a scalar element
+  Type *rhsTy = rhsV->getType();
+  if (rhsTy->isArrayTy() || rhsTy->isPointerTy()) {
+    std::string msg = "array used as scalar in array assignment";
+    printErrorAtNode(LHS.get(), msg.c_str());
+    noteError();
+    return nullptr;
   }
 
-  Builder.CreateStore(rhs, elemPtr);
-  return rhs;
+  // Enforce widening rule for assignment into the element type
+  rhsV = widenOrError(rhsV, elemTy, LHS.get(), "assigning to array element");
+  if (!rhsV) return nullptr;
+
+  // Store value into the computed element address
+  Builder.CreateStore(rhsV, elemPtr);
+  return rhsV;
 }
 
 
@@ -3320,20 +3199,13 @@ Value *ArrayAccessAST::codegen() {
   Value *elemPtr = nullptr;
   Type  *elemTy  = nullptr;
 
-  if (!resolveArrayElementPtr(
-          name,
-          this,
-          indices,
-          "in access",
-          "array access",
-          "access",
-          elemPtr,
-          elemTy)) {
+  if (!getArrayElementAddress(name, indices, this, elemPtr, elemTy)) {
     return nullptr;
   }
 
   return Builder.CreateLoad(elemTy, elemPtr, name + "_elem_val");
 }
+
 
 //================== Binary codegen ==================
 
@@ -4178,10 +4050,12 @@ Value* AssignAST::codegen() {
   return rhsV;
 }
 
-
+//===----------------------------------------------------------------------===//
 //===----------------------------------------------------------------------===//
 // AST Printer
 //===----------------------------------------------------------------------===//
+//===----------------------------------------------------------------------===//
+
 
 // Stream an AST node using its to_string()
 llvm::raw_ostream& operator<<(llvm::raw_ostream& os, const ASTnode& ast) {
@@ -4204,7 +4078,7 @@ std::string IntASTnode::toExprString() const {
 }
 
 void IntASTnode::to_string_inner(std::string &buffer, int indent) const {
-  appendln(buffer, indent, "Int(" + std::to_string(Val) + ")");
+  appendln(buffer, indent, "IntegerLiteral " + std::to_string(Val));
 }
 
 // FloatASTnode
@@ -4213,7 +4087,7 @@ std::string FloatASTnode::toExprString() const {
 }
 
 void FloatASTnode::to_string_inner(std::string &buffer, int indent) const {
-  appendln(buffer, indent, "Float(" + std::to_string(Val) + ")");
+  appendln(buffer, indent, "FloatingLiteral " + std::to_string(Val));
 }
 
 // BoolASTnode
@@ -4223,7 +4097,7 @@ std::string BoolASTnode::toExprString() const {
 
 void BoolASTnode::to_string_inner(std::string &buffer, int indent) const {
   const char *text = Bool ? "true" : "false";
-  appendln(buffer, indent, std::string("Bool(") + text + ")");
+  appendln(buffer, indent, std::string("BoolLiteral ") + text);
 }
 
 // VariableASTnode
@@ -4232,7 +4106,8 @@ std::string VariableASTnode::toExprString() const {
 }
 
 void VariableASTnode::to_string_inner(std::string &buffer, int indent) const {
-  appendln(buffer, indent, "Var(" + Name + ")");
+  appendln(buffer, indent, "DeclRefExpr " + Name);
+
 }
 
 
@@ -4248,7 +4123,7 @@ std::string UnaryExprAST::toExprString() const {
 }
 
 void UnaryExprAST::to_string_inner(std::string &buffer, int indent) const {
-  appendln(buffer, indent, std::string("Unary('") + Op + "')");
+  appendln(buffer, indent, std::string("UnaryOperator '") + Op + "'");
   if (Operand) {
     Operand->to_string_into(buffer, indent + 1);
   }
@@ -4262,7 +4137,7 @@ std::string BinaryExprAST::toExprString() const {
 }
 
 void BinaryExprAST::to_string_inner(std::string &buffer, int indent) const {
-  appendln(buffer, indent, std::string("Binary(") + opTokName(OpTok) + ")");
+  appendln(buffer, indent, std::string("BinaryOperator '") + opTokName(OpTok) + "'");
 
   if (LHS) {
     appendln(buffer, indent + 1, "LHS:");
@@ -4282,7 +4157,7 @@ std::string AssignAST::toExprString() const {
 }
 
 void AssignAST::to_string_inner(std::string &buffer, int indent) const {
-  appendln(buffer, indent, "Assign");
+  appendln(buffer, indent, "BinaryOperator '='");
 
   appendln(buffer, indent + 1, "LHS:");
   if (LHS) {
@@ -4309,7 +4184,7 @@ std::string CallExprAST::toExprString() const {
 }
 
 void CallExprAST::to_string_inner(std::string &buffer, int indent) const {
-  appendln(buffer, indent, "Call " + Callee);
+  appendln(buffer, indent, "CallExpr " + Callee);
 
   int index = 0;
   for (auto &arg : Args) {
@@ -4328,7 +4203,7 @@ void CallExprAST::to_string_inner(std::string &buffer, int indent) const {
 
 // FunctionDeclAST
 void FunctionDeclAST::to_string_inner(std::string &buffer, int indent) const {
-  std::string header = "Function " + Proto->getName() + " : " + Proto->getType();
+  std::string header = "FunctionDecl " + Proto->getName() + " '" + Proto->getType() + "'";
   appendln(buffer, indent, header);
 
   const auto &params = Proto->getParams();
@@ -4361,12 +4236,13 @@ void FunctionDeclAST::to_string_inner(std::string &buffer, int indent) const {
 
 // VarDeclAST
 void VarDeclAST::to_string_inner(std::string &buffer, int indent) const {
-  appendln(buffer, indent, "VarDecl " + getName() + " : " + getType());
+  appendln(buffer, indent, "VarDecl " + getName() + " '" + getType() + "'");
 }
 
 // GlobVarDeclAST
 void GlobVarDeclAST::to_string_inner(std::string &buffer, int indent) const {
-  appendln(buffer, indent, "GlobVarDecl " + getName() + " : " + getType());
+  appendln(buffer, indent,"VarDecl " + getName() + " '" + getType() + "' (global)");
+
 }
 
 
@@ -4402,7 +4278,7 @@ void BlockAST::to_string_inner(std::string &buffer, int indent) const {
 
 // IfExprAST
 void IfExprAST::to_string_inner(std::string &buffer, int indent) const {
-  appendln(buffer, indent, "If");
+  appendln(buffer, indent, "IfStmt");
 
   appendln(buffer, indent + 1, "Cond:");
   if (Cond) {
@@ -4422,7 +4298,7 @@ void IfExprAST::to_string_inner(std::string &buffer, int indent) const {
 
 // WhileExprAST
 void WhileExprAST::to_string_inner(std::string &buffer, int indent) const {
-  appendln(buffer, indent, "While");
+  appendln(buffer, indent, "WhileStmt");
 
   appendln(buffer, indent + 1, "Cond:");
   if (Cond) {
@@ -4444,7 +4320,7 @@ std::string ReturnAST::toExprString() const {
 }
 
 void ReturnAST::to_string_inner(std::string &buffer, int indent) const {
-  appendln(buffer, indent, "Return");
+  appendln(buffer, indent, "ReturnStmt");
   if (Val) {
     appendln(buffer, indent + 1, "Val:");
     Val->to_string_into(buffer, indent + 2);
@@ -4469,7 +4345,7 @@ std::string ArrayAccessAST::toExprString() const {
 }
 
 void ArrayAccessAST::to_string_inner(std::string &buffer, int indent) const {
-  appendln(buffer, indent, "ArrayAccess " + name);
+  appendln(buffer, indent, "ArraySubscriptExpr " + name);
   for (size_t i = 0; i < indices.size(); ++i) {
     appendln(buffer, indent + 1, "index[" + std::to_string(i) + "]:");
     if (indices[i]) {
@@ -4486,7 +4362,7 @@ std::string ArrayAssignAST::toExprString() const {
 }
 
 void ArrayAssignAST::to_string_inner(std::string &buffer, int indent) const {
-  appendln(buffer, indent, "ArrayAssign");
+  appendln(buffer, indent, "BinaryOperator '='");
 
   appendln(buffer, indent + 1, "LHS:");
   if (LHS) {
@@ -4555,50 +4431,33 @@ std::string ArrayDeclAST::toExprString() const {
 static void printProgramAST() {
   std::string out;
 
-  appendln(out, 0, "Program");
+  // Root node
+  appendln(out, 0, "TranslationUnitDecl");
 
-  // externs section
-  appendln(out, 1, "Externs[" + std::to_string(gExterns.size()) + "]:");
-  for (size_t i = 0; i < gExterns.size(); ++i) {
-    const auto &ex = gExterns[i];
-
-    std::string header =
-      "[" + std::to_string(i) + "] extern " +
-      ex->getType() + " " + ex->getName() + "(";
-
+  // Extern function prototypes as top-level children
+  for (const auto &ex : gExterns) {
+    std::string header = "FunctionDecl " + ex->getName() + " '"
+                       + ex->getType() + " (";
     const auto &params = ex->getParams();
     for (size_t j = 0; j < params.size(); ++j) {
       const auto &p = params[j];
-      header += p->getType() + " " + p->getName();
-      const auto &dims = p->getDims();
-      if (!dims.empty()) {
-        header += " [";
-        for (size_t k = 0; k < dims.size(); ++k) {
-          header += std::to_string(dims[k]);
-          if (k + 1 < dims.size()) header += "][";
-        }
-        header += "]";
+      header += p->getType();
+      if (j + 1 < params.size()) {
+        header += ", ";
       }
-      if (j + 1 < params.size()) header += ", ";
     }
-    header += ")";
-
-    appendln(out, 2, header);
+    header += ")'";
+    appendln(out, 1, header);
   }
 
-  // top level declarations
-  appendln(out, 1, "Decls[" + std::to_string(gTopDecls.size()) + "]:");
-  for (size_t i = 0; i < gTopDecls.size(); ++i) {
-    auto &d = gTopDecls[i];
+  // Top-level declarations (globals, functions, arrays) as children
+  for (auto &d : gTopDecls) {
     if (!d) continue;
-
-    appendln(out, 2, "[" + std::to_string(i) + "]:");
-    d->to_string_into(out, 3);
+    d->to_string_into(out, 1);
   }
 
   fwrite(out.data(), 1, out.size(), stderr);
 }
-
 
 
 
@@ -4631,9 +4490,10 @@ int main(int argc, char **argv) {
     if (pFile == NULL)
       perror("Error opening file");
   } else {
-    std::cout << "Usage: ./code InputFile\n";
+    std::cout << "Usage: ./mccomp InputFile\n";
     return 1;
   }
+
 
   // initialise line number and column numbers
   lineNo = 1;
@@ -4666,7 +4526,6 @@ int main(int argc, char **argv) {
 
   // Make the module, which holds all the code.
   TheModule = std::make_unique<Module>("mini-c", TheContext);
-
 
   // ================== Code generation phase ==================
 
@@ -4703,31 +4562,28 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  // ===== IR output =====
 
-  // Run the parser now.
+  // 1) Print IR to stderr between your markers
+  if (PrintIR) {
+    errs() << "********************* FINAL IR (begin) ****************************\n";
+    TheModule->print(errs(), nullptr);
+    errs() << "********************* FINAL IR (end) ******************************\n";
+  }
 
-  /* UNCOMMENT : Task 2 - Parser */
-  //  parser();
-  //  fprintf(stderr, "Parsing Finished\n");  
-
-  printf(
-      "********************* FINAL IR (begin) ****************************\n");
-  // Print out all of the generated code into a file called output.ll
-  // printf("%s\n", argv[1]);
+  // 2) Write IR to output.ll
   auto Filename = "output.ll";
   std::error_code EC;
   raw_fd_ostream dest(Filename, EC, sys::fs::OF_None);
 
   if (EC) {
-    errs() << "Could not open file: " << EC.message();
+    errs() << "Could not open file: " << EC.message() << "\n";
+    fclose(pFile);
     return 1;
   }
 
-  // TheModule->print(errs(), nullptr); // print IR to terminal
   TheModule->print(dest, nullptr);
-  printf(
-      "********************* FINAL IR (end) ******************************\n");
 
-  fclose(pFile); // close the file that contains the code that was parsed
+  fclose(pFile);
   return 0;
 }
