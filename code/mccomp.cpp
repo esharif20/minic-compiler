@@ -58,9 +58,9 @@ static void noteError() {
   }
 }
 
-static bool TraceParser = false;  // set true if you want verbose parser trace
+static bool TraceParser = false;  // set true if you want parser trace
 static bool PrintAST = true;  // set true if you want to print the AST
-static bool PrintIR = true; // Global toggle for IR printing to stderr
+static bool PrintIR = false; // Global toggle for IR printing to stderr
 
 
 //===----------------------------------------------------------------------===//
@@ -819,7 +819,7 @@ public:
 };
 
 class ArrayAccessAST : public ASTnode {
-  TOKEN NameTok;                                       // new
+  TOKEN NameTok;                                       
   std::string name;                                    
   std::vector<std::unique_ptr<ASTnode>> indices;      
   
@@ -2595,7 +2595,14 @@ static FunctionType* functionTypeFromProto(const FunctionPrototypeAST* P) {
       // Scalar parameter
       paramTypes.push_back(baseTy);
     } else {
-      // Array parameter, represent as a pointer in LLVM IR
+      // Array parameter, represent as a pointer to the element type in LLVM IR.
+      //
+      // dims = [D0]             -> param type:   baseTy*
+      // dims = [D0, D1]         -> param type:   [D1 x baseTy]*
+      // dims = [D0, D1, D2]     -> param type:   [D1 x [D2 x baseTy]]*
+      //
+      // D0 (the first dimension) is not encoded in the pointer type
+      // because MiniC follows C-style parameter decay.
       Type* elemTy = baseTy;
 
       if (dims.size() > 1) {
@@ -2605,9 +2612,14 @@ static FunctionType* functionTypeFromProto(const FunctionPrototypeAST* P) {
         }
       }
 
-      Type* ptrTy = PointerType::get(TheContext, 0);
+      // In LLVM 21 we use opaque pointers: pointer type does not encode element.
+      // Array element shape comes from ArrayParamInfo and the GEP element type.
+      Type* ptrTy = PointerType::get(TheContext, 0); // opaque pointer
       paramTypes.push_back(ptrTy);
+
     }
+
+
   }
 
   Type* retTy = typeFromString(P->getType());
@@ -2643,10 +2655,7 @@ static Function* declareFunctionFromProto(const FunctionPrototypeAST* P) {
   }
 
   // Create a fresh declaration
-  F = Function::Create(FT,
-                       Function::ExternalLinkage,
-                       name,
-                       TheModule.get());
+  F = Function::Create(FT, Function::ExternalLinkage, name, TheModule.get());
 
   // Give argument names from the prototype
   unsigned idx = 0;
@@ -2878,11 +2887,7 @@ Value* VarDeclAST::codegen() {
 // Array helpers: compute element address for arrays and array parameters
 // ============================================================================
 
-static bool codegenIndexAsInt(
-    const std::string &name,
-    ASTnode *idxNode,
-    Value *&idxVal) {
-
+static bool codegenIndexAsInt(const std::string &name, ASTnode *idxNode, Value *&idxVal) {
   idxVal = idxNode->codegen();
   if (!idxVal) {
     // Index expression already reported an error
@@ -3000,9 +3005,9 @@ static bool getArrayElementAddress(
 
     auto metaIt = ArrayParamInfo.find(name);
     if (metaIt == ArrayParamInfo.end()) {
-      fprintf(stderr,
-              "Pointer variable '%s' used in array access is not a known array parameter\n",
-              name.c_str());
+      std::string msg =
+        "Pointer variable '" + name + "' used in array access is not a known array parameter";
+      printErrorAtNode(loc, msg.c_str());
       noteError();
       return false;
     }
@@ -3048,6 +3053,7 @@ static bool getArrayElementAddress(
 
     return elemPtr != nullptr;
   }
+
 
   // Not an array or pointer
   {
@@ -3541,20 +3547,22 @@ static bool allocateAndStoreArgs(Function *F, const FunctionPrototypeAST &proto)
 //   - ret 0/false  for non-void functions
 //---------------------------------------------------------
 static void insertDefaultReturnIfNeeded(Function *F, FunctionType *fnTy) {
-  BasicBlock *entry = &F->getEntryBlock();
+  // Use the current insertion block as the fallthrough block
+  BasicBlock *curBB = Builder.GetInsertBlock();
+  if (!curBB) return;
 
-  // Do nothing if the block already ends with a terminator
-  if (entry->getTerminator()) return;
+  // If this block already has a terminator, do nothing
+  if (curBB->getTerminator()) return;
 
   Type *retTy = fnTy->getReturnType();
 
   if (retTy->isVoidTy()) {
     Builder.CreateRetVoid();
   } else {
-    // zeroOf handles default literal (0 for int/float, false for bool)
     Builder.CreateRet(zeroOf(retTy));
   }
 }
+
 
 
 
@@ -3564,14 +3572,17 @@ static void insertDefaultReturnIfNeeded(Function *F, FunctionType *fnTy) {
 // if the IR is structurally invalid.
 //---------------------------------------------------------
 static bool verifyGeneratedFunction(Function *F, const std::string &name, const ASTnode *loc) {
-  // verifyFunction returns false if valid
-  if (!verifyFunction(*F)) return true;
+  // verifyFunction returns true if broken, and prints details to errs()
+  if (verifyFunction(*F, &errs())) {
+    std::string msg = "invalid generated code for function '" + name + "'";
+    printErrorAtNode(loc, msg.c_str());
+    noteError();
+    return false;
+  }
 
-  std::string msg = "invalid generated code for function '" + name + "'";
-  printErrorAtNode(loc, msg.c_str());
-  noteError();
-  return false;
+  return true;
 }
+
 
 //---------------------------------------------------------
 // FunctionDeclAST::codegen
@@ -3628,13 +3639,26 @@ Value *FunctionDeclAST::codegen() {
  * If widening is illegal (narrowing), emits an error at loc.
  * Used by CallExpr, ReturnAST and AssignAST.
  */
-static Value *widenOrError(Value *v,
-                           Type *targetTy,
-                           ASTnode *loc,
-                           const char *contextPrefix) {
+static Value *widenOrError(Value *v, Type *targetTy, ASTnode *loc, const char *contextPrefix) {
   Type *srcTy = v->getType();
-  if (srcTy == targetTy) return v;
+  // Pointer arguments: allow identical pointer types, reject mismatched ones
+  if (srcTy->isPointerTy() && targetTy->isPointerTy()) {
+    if (srcTy == targetTy) {
+      return v;
+    }
+    std::string msg =
+      std::string(contextPrefix) + " between incompatible pointer types";
+    printErrorAtNode(loc, msg.c_str());
+    noteError();
+    return nullptr;
+  }
 
+  // Exact match
+  if (srcTy == targetTy) {
+    return v;
+  }
+
+  // Non-pointer: use widening rules for bool/int/float
   if (!isWideningType(srcTy, targetTy)) {
     std::string msg = std::string(contextPrefix) + " '" +
       std::string(miniCTypeName(srcTy)) + "' to '" +
@@ -3644,7 +3668,7 @@ static Value *widenOrError(Value *v,
     return nullptr;
   }
 
-  // safe widening
+  // Safe widening cast
   return castTo(targetTy, v, contextPrefix);
 }
 
@@ -3930,13 +3954,33 @@ Value* BoolASTnode::codegen() {
 Value* VariableASTnode::codegen() {
   const std::string &name = getName();
 
+  // Local variable
   if (AllocaInst* local = lookupLocal(name)) {
     Type* ty = local->getAllocatedType();
+
+    // If this is a local array, decay to pointer to first element
+    if (ty->isArrayTy()) {
+      Value* zero = ConstantInt::get(getIntTy(), 0);
+      Value* idxs[] = { zero, zero };
+      return Builder.CreateInBoundsGEP(ty, local, idxs, name + "_decay");
+    }
+
+    // Scalar local
     return Builder.CreateLoad(ty, local, name + "_val");
   }
 
+  // Global variable
   if (GlobalVariable* global = lookupGlobal(name)) {
     Type* ty = global->getValueType();
+
+    // If this is a global array, decay to pointer to first element
+    if (ty->isArrayTy()) {
+      Value* zero = ConstantInt::get(getIntTy(), 0);
+      Value* idxs[] = { zero, zero };
+      return Builder.CreateInBoundsGEP(ty, global, idxs, name + "_decay");
+    }
+
+    // Scalar global
     return Builder.CreateLoad(ty, global, name + "_val");
   }
 
@@ -3945,6 +3989,7 @@ Value* VariableASTnode::codegen() {
   noteError();
   return nullptr;
 }
+
 
 
 
@@ -4041,9 +4086,21 @@ Value* AssignAST::codegen() {
   Value *rhsV = RHS->codegen();
   if (!rhsV) return nullptr;
 
+  Type *rhsTy = rhsV->getType();
+
+  // Forbids assigning an array value to a scalar variable
+  if (rhsTy->isArrayTy() &&
+      !varTy->isArrayTy() && !varTy->isPointerTy()) {
+    std::string msg = "array used as scalar in assignment";
+    printErrorAtNode(LHS.get(), msg.c_str());
+    noteError();
+    return nullptr;
+  }
+
   // enforce widening rule for assignment
   rhsV = widenOrError(rhsV, varTy, RHS.get(), "assigning");
   if (!rhsV) return nullptr;
+
 
   // final store
   Builder.CreateStore(rhsV, destPtr);
